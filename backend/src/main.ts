@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-// v2 - endpoint fix
+// v1.0.0 - WebSocket tick feed, ATR buffer, RSI/volume filters, persistent halt, RDX filter
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
