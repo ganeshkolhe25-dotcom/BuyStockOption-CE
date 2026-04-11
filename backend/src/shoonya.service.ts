@@ -682,10 +682,20 @@ export class ShoonyaService {
     /**
      * Execute Buy Order at Finvasia API
      */
-    async placeOrder(token: string, quantity: number, price: number): Promise<any> {
+    async placeOrder(token: string, quantity: number, price: number, type?: 'CE' | 'PE'): Promise<any> {
         if (!this.sessionToken) await this.authenticate();
 
-        this.logger.log(`Placing Live BUY Order for Token [${token}] | Qty [${quantity}]`);
+        // ── Market-on-Limit: add 0.5% slippage allowance to guarantee fill ────
+        // CE (buy call): bid up 0.5% above ask so we don't miss illiquid fills
+        // PE (buy put) : bid down 0.5% below ask (puts invert momentum direction)
+        // Unknown/no type: use raw ask price as before
+        const limitPrice = price > 0 && type
+            ? parseFloat((type === 'CE' ? price * 1.005 : price * 0.995).toFixed(2))
+            : price;
+
+        this.logger.log(
+            `Placing Live BUY Order for Token [${token}] | Qty [${quantity}] | Ask=${price} → LimitPrice=${limitPrice} (type=${type ?? 'raw'})`
+        );
 
         try {
             const config = await this.getConfig();
@@ -695,10 +705,10 @@ export class ShoonyaService {
                 exch: 'NFO', // Options Exchange
                 tsym: token,
                 qty: quantity.toString(),
-                prc: price > 0 ? price.toString() : '0', // 0 for MKT order if limit not preferred
+                prc: limitPrice > 0 ? limitPrice.toString() : '0',
                 prd: 'M', // Margin (M) / Normal Product / MIS (I)
                 trantype: 'B', // Buy
-                prctyp: price > 0 ? 'L' : 'MKT', // Limit / Market
+                prctyp: limitPrice > 0 ? 'L' : 'MKT', // Always Limit when price available
                 ret: 'DAY'
             };
 
@@ -710,7 +720,7 @@ export class ShoonyaService {
             if (response.data.stat === 'Not_Ok' && response.data.emsg?.toLowerCase().includes('session')) {
                 this.sessionToken = null;
                 await this.authenticate();
-                return this.placeOrder(token, quantity, price); // Recurse once
+                return this.placeOrder(token, quantity, price, type); // Recurse once
             }
 
             if (response.data.stat === 'Ok') {

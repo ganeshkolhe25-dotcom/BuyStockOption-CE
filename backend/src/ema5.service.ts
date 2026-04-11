@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { EMA } from 'technicalindicators';
+import { EMA, ATR, RSI } from 'technicalindicators';
 
 export interface EMA5Signal {
     symbol: string;
@@ -13,8 +13,6 @@ export interface EMA5Signal {
     status: string;
 }
 
-/** Buffer added to alert candle High/Low to filter false wicks on entry */
-const ENTRY_BUFFER = 1.5;
 
 @Injectable()
 export class Ema5Service {
@@ -54,7 +52,8 @@ export class Ema5Service {
         };
 
         const { closes, highs, lows } = data;
-        if (closes.length < 10) return { ...NONE, status: 'Not enough candles' };
+        // ATR(14) needs 14 periods + 1 offset candle for alert/activation alignment
+        if (closes.length < 16) return { ...NONE, status: 'Not enough candles' };
 
         // Calculate 5 EMA over all available closes
         const emaResult = new EMA({ values: closes, period: 5 }).getResult();
@@ -71,6 +70,24 @@ export class Ema5Service {
 
         const emaAtAlert = emaResult[alertIdx - offset];
 
+        // ── Dynamic ATR buffer (Item 1) ───────────────────────────────────────
+        // 0.1 × ATR(14) scales the entry/SL buffer with each stock's actual volatility
+        const atrResult = new ATR({ high: highs, low: lows, close: closes, period: 14 }).getResult();
+        const atr    = atrResult.length > 0 ? atrResult[atrResult.length - 1] : 5;
+        const buffer = parseFloat((0.1 * atr).toFixed(2));
+
+        // ── RSI(14) confirmation filter (Item 3) ─────────────────────────────
+        const rsiResult = new RSI({ values: closes, period: 14 }).getResult();
+        const latestRsi = rsiResult.length > 0 ? rsiResult[rsiResult.length - 1] : null;
+
+        // ── Volume surge filter (Item 3) ──────────────────────────────────────
+        // Current candle volume must exceed the 10-period average
+        const vol = data.volumes ?? [];
+        const vol10 = vol.slice(-11, -1);
+        const volMa = vol10.length > 0 ? vol10.reduce((a, b) => a + b, 0) / vol10.length : 0;
+        const currentVol  = vol.length > 0 ? vol[vol.length - 1] : 0;
+        const volumeSurge = volMa > 0 ? currentVol > volMa : true; // fallback: pass if no volume data
+
         const alertHigh  = highs[alertIdx];
         const alertLow   = lows[alertIdx];
         const alertClose = closes[alertIdx];
@@ -83,13 +100,21 @@ export class Ema5Service {
         // ── PE Setup: alert candle fully above EMA ────────────────────────────
         if (alertLow > emaAtAlert && alertHigh > emaAtAlert) {
             if (actLow < alertLow) {
-                // Activation candle broke below alert Low → enter PE (buffer confirms genuine break)
-                const entry  = parseFloat((alertLow - ENTRY_BUFFER).toFixed(2));
-                const sl     = parseFloat((alertHigh + ENTRY_BUFFER).toFixed(2));
+                // Secondary confirmation: RSI < 45 (bearish momentum) + volume surge
+                if (latestRsi !== null && latestRsi >= 45) {
+                    return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
+                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be <45 for PE` };
+                }
+                if (!volumeSurge) {
+                    return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
+                        status: 'Blocked: No volume surge on activation candle (PE)' };
+                }
+                const entry  = parseFloat((alertLow - buffer).toFixed(2));
+                const sl     = parseFloat((alertHigh + buffer).toFixed(2));
                 const risk   = parseFloat((sl - entry).toFixed(2));
                 const target = parseFloat((entry - 3 * risk).toFixed(2));
                 this.logger.debug(
-                    `[${data.symbol}] PE Alert+Activation: AlertLow=${alertLow} EMA=${emaAtAlert.toFixed(2)} ActLow=${actLow} → Entry=${entry} SL=${sl} Tgt=${target}`
+                    `[${data.symbol}] PE: AlertLow=${alertLow} EMA=${emaAtAlert.toFixed(2)} ATR=${atr.toFixed(2)} Buf=${buffer} RSI=${latestRsi?.toFixed(1)} → E=${entry} SL=${sl} T=${target}`
                 );
                 return {
                     symbol: data.symbol, type: 'PE',
@@ -103,13 +128,21 @@ export class Ema5Service {
         // ── CE Setup: alert candle fully below EMA ────────────────────────────
         if (alertHigh < emaAtAlert && alertLow < emaAtAlert) {
             if (actHigh > alertHigh) {
-                // Activation candle broke above alert High → enter CE (buffer confirms genuine break)
-                const entry  = parseFloat((alertHigh + ENTRY_BUFFER).toFixed(2));
-                const sl     = parseFloat((alertLow - ENTRY_BUFFER).toFixed(2));
+                // Secondary confirmation: RSI > 55 (bullish momentum) + volume surge
+                if (latestRsi !== null && latestRsi <= 55) {
+                    return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
+                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be >55 for CE` };
+                }
+                if (!volumeSurge) {
+                    return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
+                        status: 'Blocked: No volume surge on activation candle (CE)' };
+                }
+                const entry  = parseFloat((alertHigh + buffer).toFixed(2));
+                const sl     = parseFloat((alertLow - buffer).toFixed(2));
                 const risk   = parseFloat((entry - sl).toFixed(2));
                 const target = parseFloat((entry + 3 * risk).toFixed(2));
                 this.logger.debug(
-                    `[${data.symbol}] CE Alert+Activation: AlertHigh=${alertHigh} EMA=${emaAtAlert.toFixed(2)} ActHigh=${actHigh} → Entry=${entry} SL=${sl} Tgt=${target}`
+                    `[${data.symbol}] CE: AlertHigh=${alertHigh} EMA=${emaAtAlert.toFixed(2)} ATR=${atr.toFixed(2)} Buf=${buffer} RSI=${latestRsi?.toFixed(1)} → E=${entry} SL=${sl} T=${target}`
                 );
                 return {
                     symbol: data.symbol, type: 'CE',
