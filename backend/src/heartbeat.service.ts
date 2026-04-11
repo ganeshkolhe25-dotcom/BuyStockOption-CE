@@ -282,11 +282,12 @@ export class HeartbeatService {
     }
 
     /**
-     * Poll the cached 9:20 AM Setup List every 45 Seconds.
-     * If any stock crosses its Gann Trigger LATER in the day (e.g. 9:50 AM),
-     * dynamically inject it into the Heartbeat Watchlist!
+     * Check the cached 9:20 AM Setup List 5 seconds after each 5-minute candle close.
+     * Fires at 9:00:05, 9:05:05 … 14:55:05, 15:00:05 IST (Mon-Fri).
+     * Checking at candle close boundaries means the LTP we compare against each trigger
+     * is the just-closed candle's close price — preventing wick-induced false signals.
      */
-    @Cron('*/20 * * * * *')
+    @Cron('5 */5 9-15 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async continuousDailyScanMonitor() {
         if (await this.paperTrading.isTradingHaltedForDay('GANN_9')) return;
 
@@ -377,6 +378,20 @@ export class HeartbeatService {
             // Check if it's already in the watchlist before aggressively adding it
             const existing = await this.cacheManager.get(`WATCHLIST:${stock.symbol}`);
             if (existing) continue;
+
+            // ── RDX filter (Item 2): require trend momentum for GANN_9 entries ──
+            // RDX = RSI + (ADX − 20) / 5 — higher = stronger bullish trend, lower = bearish
+            // CE: rdx > 55 confirms upward momentum; PE: rdx < 45 confirms downward momentum
+            if (stock.rdx !== undefined) {
+                if (tradeType === 'CE' && stock.rdx < 55) {
+                    this.logger.debug(`[${stock.symbol}] GANN_9 CE blocked: RDX=${stock.rdx.toFixed(1)} < 55`);
+                    continue;
+                }
+                if (tradeType === 'PE' && stock.rdx > 45) {
+                    this.logger.debug(`[${stock.symbol}] GANN_9 PE blocked: RDX=${stock.rdx.toFixed(1)} > 45`);
+                    continue;
+                }
+            }
 
             if (tradeType === 'CE' && ceTrigger) {
                 await this.addToWatchlist(stock.symbol, ceTrigger, 'CE', target, sl, 'GANN_9');

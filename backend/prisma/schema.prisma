@@ -64,4 +64,7 @@ model ShoonyaConfig {
   gann9Enabled     Boolean @default(true)
   gannAngleEnabled Boolean @default(false)
   ema5Enabled      Boolean @default(false)
+  gann9Halted      Boolean @default(false)
+  gannAngleHalted  Boolean @default(false)
+  ema5Halted       Boolean @default(false)
 }

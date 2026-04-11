@@ -62,6 +62,21 @@ export class PaperTradingService implements OnModuleInit {
         } catch (e) {
             this.logger.error('Failed to cleanup orphaned trades on init', e);
         }
+
+        // ── Restore halt state from DB so halted strategies stay halted across restarts ──
+        try {
+            const config = await this.prisma.shoonyaConfig.findFirst();
+            if (config) {
+                if (config.gann9Halted)     this.haltedStrategies.add('GANN_9');
+                if (config.gannAngleHalted) this.haltedStrategies.add('GANN_ANGLE');
+                if (config.ema5Halted)      this.haltedStrategies.add('EMA_5');
+                if (this.haltedStrategies.size > 0) {
+                    this.logger.warn(`⚠️ Halt state restored from DB: [${Array.from(this.haltedStrategies).join(', ')}]`);
+                }
+            }
+        } catch (e) {
+            this.logger.error('Failed to restore halt state from DB on init', e);
+        }
     }
 
     /**
@@ -420,14 +435,25 @@ export class PaperTradingService implements OnModuleInit {
        return Math.abs(this.DEFAULT_MAX_LOSS) * 2;
     }
 
+    /** Persist a strategy halt to DB so it survives server restarts */
+    private async persistStrategyHalt(strategy: string): Promise<void> {
+        const field = strategy === 'GANN_9' ? { gann9Halted: true }
+            : strategy === 'GANN_ANGLE'     ? { gannAngleHalted: true }
+            :                                 { ema5Halted: true };
+        await this.prisma.shoonyaConfig.updateMany({ data: field });
+    }
+
     /**
      * Daily Reset Cron at 9:00 AM IST (Before Market Open)
      */
     @Cron('0 09 * * 1-5', { timeZone: 'Asia/Kolkata' })
-    resetDailyPortfolio() {
+    async resetDailyPortfolio() {
         this.logger.log('🌅 Resetting Paper Portfolio for the new Trading Day.');
         this.isTradingHalted = false;
         this.haltedStrategies.clear();
+        await this.prisma.shoonyaConfig.updateMany({
+            data: { gann9Halted: false, gannAngleHalted: false, ema5Halted: false }
+        });
     }
 
     /**
@@ -479,6 +505,7 @@ export class PaperTradingService implements OnModuleInit {
            if (strategyPnl <= lossLimit && !this.haltedStrategies.has(strategy)) {
                this.logger.warn(`🛑 TRIGGERING STRATEGY UNIVERSAL EXIT! Reason: ${strategy} Loss Exceeded ${lossLimit} threshold. (Current: ₹${strategyPnl.toFixed(2)})`);
                this.haltedStrategies.add(strategy);
+               await this.persistStrategyHalt(strategy); // Survive server restart
 
                // Liquidate ONLY this strategy's active positions
                const positions = Array.from(this.activePositions.values()).filter(p => (p.strategyName || 'GANN_9') === strategy);
@@ -488,6 +515,7 @@ export class PaperTradingService implements OnModuleInit {
            } else if (strategyPnl >= profitLimit && !this.haltedStrategies.has(strategy)) {
                this.logger.warn(`🎯 TRIGGERING STRATEGY UNIVERSAL EXIT! Reason: ${strategy} Profit Exceeded ${profitLimit} Target. Locking in Day Profits! (Current: ₹${strategyPnl.toFixed(2)})`);
                this.haltedStrategies.add(strategy);
+               await this.persistStrategyHalt(strategy); // Survive server restart
 
                // Liquidate ONLY this strategy's active positions to lock in the wins
                const positions = Array.from(this.activePositions.values()).filter(p => (p.strategyName || 'GANN_9') === strategy);
