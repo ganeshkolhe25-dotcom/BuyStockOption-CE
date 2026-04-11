@@ -390,14 +390,22 @@ export class PaperTradingService implements OnModuleInit {
     }
 
     /**
+     * Expose Shoonya config to other services (e.g. HeartbeatService) without injecting Prisma everywhere
+     */
+    async getStrategyConfig() {
+        return this.prisma.shoonyaConfig.findFirst();
+    }
+
+    /**
      * Get specific loss limit from DB or fallback
      */
     private async getStrategyLossLimit(strategyName: string) {
        const config = await this.prisma.shoonyaConfig.findFirst();
        if (!config) return this.DEFAULT_MAX_LOSS;
+       if (strategyName === 'GANN_9') return config.gann9MaxLoss;
        if (strategyName === 'GANN_ANGLE') return config.gannAngleMaxLoss;
        if (strategyName === 'EMA_5') return config.ema5MaxLoss;
-       return config.gann9MaxLoss;
+       return this.DEFAULT_MAX_LOSS;
     }
 
     /**
@@ -405,10 +413,11 @@ export class PaperTradingService implements OnModuleInit {
      */
     private async getStrategyProfitLimit(strategyName: string) {
        const config = await this.prisma.shoonyaConfig.findFirst();
-       if (!config) return Math.abs(this.DEFAULT_MAX_LOSS) * 2; // Default fallback target
+       if (!config) return Math.abs(this.DEFAULT_MAX_LOSS) * 2;
+       if (strategyName === 'GANN_9') return config.gann9MaxProfit;
        if (strategyName === 'GANN_ANGLE') return config.gannAngleMaxProfit;
        if (strategyName === 'EMA_5') return config.ema5MaxProfit;
-       return config.gann9MaxProfit;
+       return Math.abs(this.DEFAULT_MAX_LOSS) * 2;
     }
 
     /**

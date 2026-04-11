@@ -208,51 +208,68 @@ export default function GannAngle({ isEnabled, portfolio, history, handleSquareO
         </div>
       )}
 
-      {/* Integrated Active Trades List for Gann Angle */}
-      {activeInnerTab === 'analysis' && portfolio?.positions?.some((p: any) => p.strategyName === 'GANN_ANGLE') && (
+      {/* Active Trades — always visible under NIFTY 100 Analysis Scanner */}
+      {activeInnerTab === 'analysis' && (
          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6">
             <h3 className="text-sm font-semibold text-neutral-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-               <TrendingUp className="w-4 h-4 text-emerald-400" /> Currently Active Gann Angle Trades
+               <TrendingUp className="w-4 h-4 text-indigo-400" /> Active Gann Angle Trades
+               <span className="ml-auto px-2 py-0.5 text-[10px] font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 rounded">
+                  {portfolio?.positions?.filter((p: any) => p.strategyName === 'GANN_ANGLE').length || 0} Running
+               </span>
             </h3>
-            <div className="space-y-4">
-               {portfolio.positions.filter((p: any) => p.strategyName === 'GANN_ANGLE').map((pos: any, idx: number) => {
-                  const livePnl = (pos.currentLtp - pos.entryPrice) * pos.qty;
-                  return (
-                    <div key={idx} className="flex flex-col md:flex-row md:items-center justify-between p-4 rounded-xl bg-neutral-950 border border-neutral-800 hover:border-indigo-500/30 transition-all">
-                       <div className="flex items-center gap-4">
-                          <div className={`p-2 rounded-lg ${pos.type === 'CE' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
-                             {pos.type === 'CE' ? <TrendingUp className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
-                          </div>
-                          <div>
-                             <div className="font-bold text-white">{pos.symbol} <span className="text-xs font-mono text-neutral-500 ml-2">{pos.tradingSymbol}</span></div>
-                             <div className="text-xs text-neutral-500">Entry: ₹{pos.entryPrice} @ {pos.entryTime ? new Date(pos.entryTime).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Today'}</div>
-                          </div>
-                       </div>
-                       <div className="mt-4 md:mt-0 flex items-center gap-6">
-                          <div className="text-right">
-                             <div className="text-[10px] text-neutral-500 uppercase font-bold">LTP</div>
-                             <div className="text-white font-mono font-bold animate-pulse">₹{pos.currentLtp}</div>
-                          </div>
-                          <div className="text-right min-w-[100px]">
-                             <div className="text-[10px] text-neutral-500 uppercase font-bold">PnL</div>
-                             <div className={`font-mono font-bold text-lg ${livePnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                {livePnl >= 0 ? '+' : ''}₹{livePnl.toFixed(2)}
+
+            {(!portfolio?.positions || portfolio.positions.filter((p: any) => p.strategyName === 'GANN_ANGLE').length === 0) ? (
+               <div className="flex flex-col items-center justify-center py-10 border border-dashed border-neutral-800 rounded-xl text-neutral-600 gap-2">
+                  <TrendingUp className="w-8 h-8 opacity-30" />
+                  <p className="text-sm">No active Gann Angle trades running right now.</p>
+                  <p className="text-xs">Trades will appear here automatically once the engine detects a valid 1x1 angle breakout.</p>
+               </div>
+            ) : (
+               <div className="space-y-3">
+                  {portfolio.positions.filter((p: any) => p.strategyName === 'GANN_ANGLE').map((pos: any, idx: number) => {
+                     const livePnl = (pos.currentLtp - pos.entryPrice) * pos.qty;
+                     return (
+                       <div key={idx} className="flex flex-col md:flex-row md:items-center justify-between p-4 rounded-xl bg-neutral-950 border border-neutral-800 hover:border-indigo-500/30 transition-all">
+                          <div className="flex items-center gap-4">
+                             <div className={`p-2 rounded-lg ${pos.type === 'CE' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
+                                {pos.type === 'CE' ? <TrendingUp className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
+                             </div>
+                             <div>
+                                <div className="font-bold text-white">{pos.symbol} <span className="text-xs font-mono text-neutral-500 ml-2">{pos.tradingSymbol}</span></div>
+                                <div className="text-xs text-neutral-500">Entry: ₹{pos.entryPrice} @ {pos.entryTime ? new Date(pos.entryTime).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Today'}</div>
+                                <div className="text-xs text-neutral-600 mt-0.5 font-mono">Target: <span className="text-amber-500">₹{pos.targetPrice?.toFixed(2)}</span> &nbsp;|&nbsp; SL: <span className="text-rose-500">₹{pos.slPrice?.toFixed(2)}</span></div>
                              </div>
                           </div>
-                          {handleSquareOff && (
-                            <button
-                              onClick={() => handleSquareOff(pos.token)}
-                              disabled={squaringOff === pos.token}
-                              className={`px-3 py-1.5 text-xs font-bold rounded transition-colors ${squaringOff === pos.token ? 'bg-neutral-800 text-neutral-500 cursor-not-allowed' : 'bg-red-500/10 text-red-500 hover:bg-red-500/20 border border-red-500/30'}`}
-                            >
-                              {squaringOff === pos.token ? 'Closing...' : 'Square Off'}
-                            </button>
-                          )}
+                          <div className="mt-4 md:mt-0 flex items-center gap-6">
+                             <div className="text-right">
+                                <div className="text-[10px] text-neutral-500 uppercase font-bold">Option LTP</div>
+                                <div className="text-white font-mono font-bold animate-pulse">₹{pos.currentLtp}</div>
+                             </div>
+                             <div className="text-right">
+                                <div className="text-[10px] text-neutral-500 uppercase font-bold">Qty</div>
+                                <div className="text-neutral-300 font-mono font-bold">{pos.qty}</div>
+                             </div>
+                             <div className="text-right min-w-[100px]">
+                                <div className="text-[10px] text-neutral-500 uppercase font-bold">Running P&L</div>
+                                <div className={`font-mono font-bold text-lg ${livePnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                   {livePnl >= 0 ? '+' : ''}₹{livePnl.toFixed(2)}
+                                </div>
+                             </div>
+                             {handleSquareOff && (
+                               <button
+                                 onClick={() => handleSquareOff(pos.token)}
+                                 disabled={squaringOff === pos.token}
+                                 className={`px-3 py-1.5 text-xs font-bold rounded transition-colors ${squaringOff === pos.token ? 'bg-neutral-800 text-neutral-500 cursor-not-allowed' : 'bg-red-500/10 text-red-500 hover:bg-red-500/20 border border-red-500/30'}`}
+                               >
+                                 {squaringOff === pos.token ? 'Closing...' : 'Square Off'}
+                               </button>
+                             )}
+                          </div>
                        </div>
-                    </div>
-                  );
-               })}
-            </div>
+                     );
+                  })}
+               </div>
+            )}
          </div>
       )}
       </div>

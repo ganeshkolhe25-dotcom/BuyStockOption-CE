@@ -17,6 +17,21 @@ export interface WatchlistEntry {
     strategyName?: string;
 }
 
+export interface PendingLimitOrder {
+    symbol: string;
+    token: string;
+    tradingSymbol: string;
+    type: 'CE' | 'PE';
+    qty: number;
+    midPrice: number;
+    orderType: 'BUY' | 'SELL';
+    placedAt: number;
+    targetPrice?: number;
+    slPrice?: number;
+    strategyName: string;
+    exitReason?: string;
+}
+
 @Injectable()
 export class HeartbeatService {
     private readonly logger = new Logger(HeartbeatService.name);
@@ -24,6 +39,7 @@ export class HeartbeatService {
 
     private dailyTradesCount = 0;
     private lastHeartbeatTime = new Date().toISOString();
+    private pendingLimitOrders = new Map<string, PendingLimitOrder>();
 
     constructor(
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
@@ -126,6 +142,7 @@ export class HeartbeatService {
                 // EMA_5 uses a wider 0.3% buffer (pullback after crossover is normal)
                 // Gann strategies use tight 0.05% buffer
                 const isEma = entry.strategyName === 'EMA_5';
+                const isGannAngle = entry.strategyName === 'GANN_ANGLE';
                 const bufferPct = isEma ? 0.003 : 0.0005;
                 const buffer = entry.triggerPrice * bufferPct;
 
@@ -137,20 +154,21 @@ export class HeartbeatService {
                 }
 
                 if (!isSustaining) {
-                    this.logger.warn(`❌ FAKE BREAKOUT: [${entry.symbol}] failed to sustain ${entry.type} trigger. Drop LTP: ₹${ltp}. Removing from Watchlist.`);
+                    this.logger.warn(`❌ SIGNAL INVALIDATED: [${entry.symbol}] LTP ₹${ltp} moved away from ${entry.type} trigger ₹${entry.triggerPrice}. Removing from Watchlist.`);
                     await this.cacheManager.del(key);
                     updatedKeys = updatedKeys.filter(k => k !== key);
                     continue;
                 }
 
-                // EMA_5: 1-minute sustain (signal is already confirmed by candle close + RSI + volume)
-                // Gann strategies: 5-minute sustain
-                const sustainMs = isEma ? 1 * 60 * 1000 : 5 * 60 * 1000;
+                // GANN_ANGLE: execute immediately — the 5-min scan interval itself is the confirmation
+                // EMA_5: 1-minute sustain (candle close + RSI + volume already confirms)
+                // GANN_9: 5-minute sustain (breakout level needs momentum confirmation)
+                const sustainMs = isGannAngle ? 0 : isEma ? 1 * 60 * 1000 : 5 * 60 * 1000;
                 const timeElapsedMs = Date.now() - entry.breakoutTime;
 
                 if (timeElapsedMs >= sustainMs) {
-                    const label = isEma ? '1-MIN' : '5-MIN';
-                    this.logger.log(`🚀 ${label} SUSTAIN VERIFIED FOR [${entry.symbol}] AT ₹${ltp}! Triggering ${entry.type} Option Entry.`);
+                    const label = isGannAngle ? 'IMMEDIATE' : isEma ? '1-MIN' : '5-MIN';
+                    this.logger.log(`🚀 ${label} SIGNAL CONFIRMED FOR [${entry.symbol}] AT ₹${ltp}! Triggering ${entry.type} Option Entry.`);
 
                     // Remove from watchlist so we don't buy it twice
                     await this.cacheManager.del(key);
@@ -206,6 +224,30 @@ export class HeartbeatService {
                 return;
             }
 
+            // GANN_ANGLE: place a limit buy order at mid price (bid+ask)/2
+            // Actual fill is checked every 15s for up to 2 minutes, then discarded if unfilled
+            if (strategyName === 'GANN_ANGLE') {
+                const midPrice = parseFloat(((optionPremiumInfo.bidPrice + optionPremiumInfo.askPrice) / 2).toFixed(2));
+                const lotValue = contract.lotSize * midPrice;
+                if (lotValue > 40000) {
+                    const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Mid: ₹${midPrice}, Qty: ${contract.lotSize})`;
+                    await this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
+                    this.logger.warn(failMsg);
+                    return;
+                }
+                const orderKey = `BUY:${contract.token}`;
+                if (!this.pendingLimitOrders.has(orderKey)) {
+                    this.pendingLimitOrders.set(orderKey, {
+                        symbol, token: contract.token, tradingSymbol: contract.tradingSymbol,
+                        type, qty: contract.lotSize, midPrice, orderType: 'BUY',
+                        placedAt: Date.now(), targetPrice, slPrice, strategyName
+                    });
+                    this.logger.log(`📋 GANN_ANGLE LIMIT BUY: [${symbol}] ${type} at mid ₹${midPrice} (bid ₹${optionPremiumInfo.bidPrice} / ask ₹${optionPremiumInfo.askPrice}). 2-min fill window.`);
+                }
+                return;
+            }
+
+            // GANN_9 / EMA_5: execute immediately at Ask Price (existing behaviour)
             // 🛑 Lot Price Constraint: Total Investment (Qty * Price) must be <= 40,000
             const lotValue = contract.lotSize * optionPremiumInfo.askPrice;
             if (lotValue > 40000) {
@@ -215,7 +257,6 @@ export class HeartbeatService {
                 return;
             }
 
-            // Execute Paper Limit ATP entry using the Ask Price (Best Sell Price)
             const isSettled = await this.paperTrading.placeBuyOrder(
                 symbol,
                 contract.token,
@@ -248,6 +289,13 @@ export class HeartbeatService {
     @Cron('*/20 * * * * *')
     async continuousDailyScanMonitor() {
         if (await this.paperTrading.isTradingHaltedForDay('GANN_9')) return;
+
+        // Respect the gann9Enabled toggle — if disabled mid-day, stop scanning immediately
+        const config = await this.paperTrading.getStrategyConfig();
+        if (config && !config.gann9Enabled) {
+            this.logger.debug('Gann Square-9 is DISABLED from settings. Skipping continuous scan.');
+            return;
+        }
 
         // Stop all new scanning after 2:45 PM
         const now = new Date();
@@ -403,10 +451,27 @@ export class HeartbeatService {
                     }
                 }
 
+                // Helper: place a mid-price limit sell for GANN_ANGLE, or close immediately for others
+                const triggerExit = async (reason: string) => {
+                    const sellKey = `SELL:${pos.token}`;
+                    if (pos.strategyName === 'GANN_ANGLE') {
+                        if (this.pendingLimitOrders.has(sellKey)) return; // already pending
+                        const midPrice = parseFloat(((currentBid + (optionInfo?.askPrice ?? currentBid)) / 2).toFixed(2));
+                        this.pendingLimitOrders.set(sellKey, {
+                            symbol: pos.symbol, token: pos.token, tradingSymbol: pos.tradingSymbol ?? '',
+                            type: pos.type, qty: pos.qty, midPrice, orderType: 'SELL',
+                            placedAt: Date.now(), strategyName: pos.strategyName, exitReason: reason
+                        });
+                        this.logger.log(`📋 GANN_ANGLE LIMIT SELL: [${pos.symbol}] at mid ₹${midPrice}. Reason: ${reason}`);
+                    } else {
+                        await this.paperTrading.closePosition(pos.token, currentBid, reason);
+                    }
+                };
+
                 if (pos.type === 'CE') {
                     if (ltp >= pos.targetPrice) {
                         this.logger.warn(`🎯 TARGET HIT: [${pos.symbol}] Underlying reached ₹${ltp} >= Target ₹${pos.targetPrice}`);
-                        await this.paperTrading.closePosition(pos.token, currentBid, `Target Hit at ₹${ltp}`);
+                        await triggerExit(`Target Hit at ₹${ltp}`);
                     } else if (ltp < pos.slPrice) {
                         if (!pos.slTriggerTime) {
                             const now = Date.now();
@@ -414,20 +479,17 @@ export class HeartbeatService {
                             this.logger.debug(`⚠️ SL BREACH DETECTED: [${pos.symbol}] dropped to ₹${ltp} < SL ₹${pos.slPrice}. Starting SL timer.`);
                         } else {
                             const elapsed = Date.now() - pos.slTriggerTime;
-                            // EMA_5: 1-min sustain (mean-reversion, false bounces resolve quickly)
-                            // Gann strategies: 5-min sustain
                             const slSustainMs = pos.strategyName === 'EMA_5' ? 60 * 1000 : 5 * 60 * 1000;
                             const slLabel = pos.strategyName === 'EMA_5' ? '1m' : '5m';
                             if (elapsed >= slSustainMs) {
                                 this.logger.warn(`🛑 STOP-LOSS HIT: [${pos.symbol}] Sustained below SL ₹${pos.slPrice} for ${slLabel}.`);
-                                await this.paperTrading.closePosition(pos.token, currentBid, `SL Hit at ₹${ltp} (${slLabel} Sustain)`);
+                                await triggerExit(`SL Hit at ₹${ltp} (${slLabel} Sustain)`);
                             } else {
                                 const secsLeft = Math.ceil((slSustainMs - elapsed) / 1000);
                                 this.logger.debug(`[${pos.symbol}] SL Breach. Wait ${secsLeft}s more for SL Execution.`);
                             }
                         }
                     } else {
-                        // Recovery Case
                         if (pos.slTriggerTime) {
                             this.logger.log(`✅ SL RECOVERY: [${pos.symbol}] recovered to ₹${ltp} >= SL ₹${pos.slPrice}. Cancelling SL timer.`);
                             this.paperTrading.updatePositionSLTrigger(pos.token, undefined);
@@ -436,7 +498,7 @@ export class HeartbeatService {
                 } else { // PE
                     if (ltp <= pos.targetPrice) {
                         this.logger.warn(`🎯 TARGET HIT: [${pos.symbol}] Underlying reached ₹${ltp} <= Target ₹${pos.targetPrice}`);
-                        await this.paperTrading.closePosition(pos.token, currentBid, `Target Hit at ₹${ltp}`);
+                        await triggerExit(`Target Hit at ₹${ltp}`);
                     } else if (ltp > pos.slPrice) {
                         if (!pos.slTriggerTime) {
                             const now = Date.now();
@@ -448,14 +510,13 @@ export class HeartbeatService {
                             const slLabel = pos.strategyName === 'EMA_5' ? '1m' : '5m';
                             if (elapsed >= slSustainMs) {
                                 this.logger.warn(`🛑 STOP-LOSS HIT: [${pos.symbol}] Sustained above SL ₹${pos.slPrice} for ${slLabel}.`);
-                                await this.paperTrading.closePosition(pos.token, currentBid, `SL Hit at ₹${ltp} (${slLabel} Sustain)`);
+                                await triggerExit(`SL Hit at ₹${ltp} (${slLabel} Sustain)`);
                             } else {
                                 const secsLeft = Math.ceil((slSustainMs - elapsed) / 1000);
                                 this.logger.debug(`[${pos.symbol}] SL Breach. Wait ${secsLeft}s more for SL Execution.`);
                             }
                         }
                     } else {
-                        // Recovery Case
                         if (pos.slTriggerTime) {
                             this.logger.log(`✅ SL RECOVERY: [${pos.symbol}] recovered to ₹${ltp} <= SL ₹${pos.slPrice}. Cancelling SL timer.`);
                             this.paperTrading.updatePositionSLTrigger(pos.token, undefined);
@@ -464,6 +525,81 @@ export class HeartbeatService {
                 }
             }
         }
+    }
+
+    /**
+     * Process GANN_ANGLE pending limit orders every 15 seconds.
+     * BUY:  fills when LTP ≤ midPrice. Discards after 2 minutes unfilled.
+     * SELL: fills when LTP ≥ midPrice. Falls back to market bid after 2 minutes.
+     */
+    @Cron('*/15 * * * * *')
+    async processPendingLimitOrders() {
+        if (this.pendingLimitOrders.size === 0) return;
+
+        const TWO_MIN_MS = 2 * 60 * 1000;
+        const toDelete: string[] = [];
+
+        for (const [key, order] of this.pendingLimitOrders.entries()) {
+            const elapsed = Date.now() - order.placedAt;
+            const optionInfo = await this.shoonyaService.getOptionQuote(order.token);
+
+            if (!optionInfo) continue; // API unavailable — retry next cycle
+
+            const currentLtp = optionInfo.ltp;
+            const currentBid = optionInfo.bidPrice > 0 ? optionInfo.bidPrice : currentLtp;
+
+            if (order.orderType === 'BUY') {
+                // Fill condition: market LTP has come down to (or below) our mid price limit
+                const filled = currentLtp <= order.midPrice;
+
+                if (filled) {
+                    const isSettled = await this.paperTrading.placeBuyOrder(
+                        order.symbol, order.token, order.tradingSymbol,
+                        order.type, order.qty, order.midPrice,
+                        order.targetPrice, order.slPrice, order.strategyName
+                    );
+                    if (isSettled) {
+                        this.dailyTradesCount++;
+                        this.logger.log(`✅ GANN_ANGLE LIMIT BUY FILLED: [${order.symbol}] ${order.type} at mid ₹${order.midPrice}`);
+                    }
+                    toDelete.push(key);
+
+                } else if (elapsed >= TWO_MIN_MS) {
+                    await this.paperTrading.logFailedTrade(
+                        order.symbol, order.type, order.midPrice,
+                        `GANN_ANGLE Limit Buy expired: LTP ₹${currentLtp} did not reach mid ₹${order.midPrice} within 2 minutes. Order discarded.`
+                    );
+                    this.logger.warn(`🗑️ GANN_ANGLE LIMIT BUY DISCARDED: [${order.symbol}] mid ₹${order.midPrice} unfilled after 2 min (LTP ₹${currentLtp}).`);
+                    toDelete.push(key);
+
+                } else {
+                    const secsLeft = Math.ceil((TWO_MIN_MS - elapsed) / 1000);
+                    this.logger.debug(`[${order.symbol}] GANN_ANGLE BUY pending — mid ₹${order.midPrice}, LTP ₹${currentLtp}. ${secsLeft}s left.`);
+                }
+
+            } else if (order.orderType === 'SELL') {
+                // Fill condition: LTP has risen to (or above) our mid price limit
+                const filled = currentLtp >= order.midPrice;
+
+                if (filled) {
+                    await this.paperTrading.closePosition(order.token, order.midPrice, `${order.exitReason} — Limit Sell filled at mid ₹${order.midPrice}`);
+                    this.logger.log(`✅ GANN_ANGLE LIMIT SELL FILLED: [${order.symbol}] at mid ₹${order.midPrice}`);
+                    toDelete.push(key);
+
+                } else if (elapsed >= TWO_MIN_MS) {
+                    // Sell timeout — fill at current market bid to ensure position is closed
+                    await this.paperTrading.closePosition(order.token, currentBid, `${order.exitReason} — Limit Sell timed out, filled at market bid ₹${currentBid}`);
+                    this.logger.warn(`⏱️ GANN_ANGLE LIMIT SELL TIMEOUT: [${order.symbol}] filled at market bid ₹${currentBid} after 2 min.`);
+                    toDelete.push(key);
+
+                } else {
+                    const secsLeft = Math.ceil((TWO_MIN_MS - elapsed) / 1000);
+                    this.logger.debug(`[${order.symbol}] GANN_ANGLE SELL pending — mid ₹${order.midPrice}, LTP ₹${currentLtp}. ${secsLeft}s left.`);
+                }
+            }
+        }
+
+        toDelete.forEach(k => this.pendingLimitOrders.delete(k));
     }
 
     /**
