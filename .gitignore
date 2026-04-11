@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs
+frontend/.next/
+frontend/out/
+frontend/build/
+backend/dist/
+backend/generated/
+
+# Logs
+*.log
+build.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# TypeScript build info
+*.tsbuildinfo
+frontend/next-env.d.ts
+
+# OS
+.DS_Store
+Thumbs.db
+
+# TAR archives
+*.tar.gz
+*.tar
+
+# SQLite DB (VM will have its own)
+backend/dev.db
+
+# Misc
+.vercel
+*.pem

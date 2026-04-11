@@ -1,0 +1,20 @@
+from NorenApi import NorenApi
+
+# Initialize API
+api = NorenApi()
+
+# Login
+login_response = api.login(
+    userid='FN140579',
+    password='Vkolhe77@3',
+    twoFA='43525VO5K65574E7S32M62T42W32RA7Q',
+    vendor_code='FN140579_U',
+    api_secret='Gg2Liz24IyD3qIN1Q63oa5anQa61aN611GI2IXF5KxEQLRRebxAzzidYGd2bbzga',
+    imei='abc1234'
+)
+
+if login_response['stat'] == 'Ok':
+    print("Login successful")
+    # Subsequent calls use login_response['jKey']
+else:
+    print("Login failed:", login_response['emsg'])

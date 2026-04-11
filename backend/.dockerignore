@@ -1,0 +1,9 @@
+node_modules
+dist
+.git
+*.md
+*.log
+*.bat
+*.js.map
+dev.db
+.env.local

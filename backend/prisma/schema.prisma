@@ -1,0 +1,67 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x", "windows"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model TradeHistory {
+  id            String    @id @default(uuid())
+  symbol        String // E.g., RELIANCE
+  token         String // E.g., 104033 (Shoonya Exchange Token)
+  tradingSymbol String? // E.g., RELIANCE26FEB2820CE (Human-Readable Option Chain from Shoonya)
+  type          String // 'CE' or 'PE'
+  quantity      Int
+  entryPrice    Float
+  exitPrice     Float?
+  realizedPnl   Float?
+  maxProfit     Float?
+  maxLoss       Float?
+  entryTime     DateTime  @default(now())
+  exitTime      DateTime?
+  exitReason    String? // E.g., 'Target Hit', '3 PM Exit'
+  status        String    @default("OPEN") // 'OPEN', 'CLOSED', 'REJECTED'
+  isPaperTrade  Boolean   @default(true)
+  strategyName  String? // E.g., 'Gap Down Reversal', 'R2 Breakout'
+}
+
+model DailyScan {
+  id       String   @id @default(uuid())
+  date     DateTime @default(now())
+  snapshot String // Stores the full results of the 9:20 AM Gann scan as JSON string
+}
+
+model ShoonyaConfig {
+  id      Int    @id @default(1)
+  uid     String
+  pwd     String
+  factor2 String
+  vc      String
+  appkey           String
+  sessionToken     String  @default("")
+  webPwd           String  @default("")
+  tradingMode      String  @default("PAPER")
+  maxTrades        Int     @default(10) // Legacy
+  gann9MaxTrades   Int     @default(5)
+  gannAngleMaxTrades Int   @default(5)
+  ema5MaxTrades    Int     @default(5)
+  gann9MaxLoss     Float   @default(-10000)
+  gannAngleMaxLoss Float   @default(-10000)
+  ema5MaxLoss      Float   @default(-10000)
+  gann9MaxProfit     Float   @default(10000)
+  gannAngleMaxProfit Float   @default(10000)
+  ema5MaxProfit      Float   @default(10000)
+  expiryMonth      String  @default("APR")
+  gann9Enabled     Boolean @default(true)
+  gannAngleEnabled Boolean @default(false)
+  ema5Enabled      Boolean @default(false)
+}
