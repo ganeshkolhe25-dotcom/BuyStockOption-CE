@@ -10,14 +10,17 @@ docker --version
 echo "Docker installed OK"
 
 echo "=== [2/5] Extracting backend code ==="
+# Wipe old deployment to ensure a clean build context (no stale dirs)
+rm -rf /opt/shoonya
 mkdir -p /opt/shoonya
-tar -xzf /home/maddy/shoonya-backend.tar.gz -C /opt/shoonya
+# --strip-components=1 flattens backend/* → /opt/shoonya/* (no nested backend/ dir)
+tar -xzf /home/maddy/shoonya-backend.tar.gz -C /opt/shoonya --strip-components=1
 cp /home/maddy/vm-app.env /opt/shoonya/.env
 echo "Code extracted OK"
 
 echo "=== [3/5] Building Docker image ==="
 cd /opt/shoonya
-docker build -t shoonya-backend .
+docker build --no-cache -t shoonya-backend .
 echo "Image built OK"
 
 echo "=== [4/5] Starting container ==="
