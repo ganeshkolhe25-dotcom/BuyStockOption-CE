@@ -31,6 +31,13 @@ export class ShoonyaService {
     private sessionToken: string | null = null;
     public lastAuthError: string | null = null;
 
+    // ── WebSocket tick feed ────────────────────────────────────────────────
+    private ws: WebSocket | null = null;
+    private readonly tickCache = new Map<string, number>(); // NSE token → latest LTP
+    private wsShouldRun = false;
+    private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    private readonly subscribedKeys = new Set<string>(); // "NSE|token" keys
+
     constructor(private readonly prisma: PrismaService) {
         // Load persisted session token from DB into memory at startup (non-blocking fire-and-forget).
         // Only set if no fresh token has already been obtained (forceReauth may run concurrently).
@@ -642,6 +649,116 @@ export class ShoonyaService {
             this.logger.error(`Symbol Resolution Error [${symbol}]: ${error.message} | Body: ${body}`);
             return null;
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // WebSocket Tick Feed
+    //
+    // Shoonya WS protocol summary:
+    //   Connect → send {"t":"c", uid, actid, susertoken, source:"API"}
+    //   Ack     ← {"t":"ck"}  → subscribe pending tokens
+    //   Sub     → {"t":"t", "k":"NSE|token1#NSE|token2"}
+    //   Tick    ← {"t":"tf"|"dk", "e":"NSE", "tk":"token", "lp":"price", ...}
+    //   Disc    → close() + schedule reconnect
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Open a persistent WebSocket connection to the Shoonya tick feed.
+     * Safe to call when already connected (no-op). Re-subscribes all known
+     * tokens automatically on every reconnect.
+     */
+    async connectTickFeed(): Promise<void> {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+        if (!this.sessionToken) await this.authenticate();
+
+        this.wsShouldRun = true;
+        const config = await this.getConfig();
+        const wsUrl = process.env.SHOONYA_WS_URL || 'wss://trade.shoonya.com/NorenWSTP/';
+        this.logger.log(`[WS] Connecting to Shoonya tick feed: ${wsUrl}`);
+
+        const socket = new WebSocket(wsUrl);
+        this.ws = socket;
+
+        socket.onopen = () => {
+            this.logger.log('[WS] Connected. Sending handshake...');
+            socket.send(JSON.stringify({
+                t: 'c', uid: config.uid, actid: config.uid,
+                susertoken: this.sessionToken, source: 'API'
+            }));
+        };
+
+        socket.onmessage = (event: MessageEvent) => {
+            try {
+                const msg = JSON.parse(event.data as string);
+                if (msg.t === 'ck') {
+                    // Handshake acknowledged — re-send all subscriptions
+                    this.logger.log(`[WS] Handshake OK. Re-subscribing ${this.subscribedKeys.size} token(s).`);
+                    if (this.subscribedKeys.size > 0) {
+                        socket.send(JSON.stringify({ t: 't', k: Array.from(this.subscribedKeys).join('#') }));
+                    }
+                } else if (msg.t === 'tf' || msg.t === 'dk') {
+                    // Price tick — update cache
+                    if (msg.tk && msg.lp) {
+                        this.tickCache.set(msg.tk, parseFloat(msg.lp));
+                    }
+                }
+            } catch { /* ignore malformed frames */ }
+        };
+
+        socket.onclose = (event: CloseEvent) => {
+            this.logger.warn(`[WS] Disconnected (code ${event.code}). ${this.wsShouldRun ? 'Reconnecting in 5s…' : 'Closed permanently.'}`);
+            this.ws = null;
+            if (this.wsShouldRun) this.scheduleWsReconnect();
+        };
+
+        socket.onerror = () => {
+            this.logger.error('[WS] Connection error — closing socket.');
+            socket.close();
+        };
+    }
+
+    private scheduleWsReconnect(): void {
+        if (this.wsReconnectTimer) return;
+        this.wsReconnectTimer = setTimeout(async () => {
+            this.wsReconnectTimer = null;
+            await this.connectTickFeed();
+        }, 5000);
+    }
+
+    /**
+     * Subscribe tokens to the live tick feed.
+     * Keys are buffered in `subscribedKeys` so they are re-sent automatically
+     * after every reconnect — safe to call before the connection is open.
+     */
+    subscribeTokens(exchange: string, tokens: string[]): void {
+        tokens.forEach(t => this.subscribedKeys.add(`${exchange}|${t}`));
+        if (this.ws?.readyState === WebSocket.OPEN) {
+            const k = tokens.map(t => `${exchange}|${t}`).join('#');
+            this.ws.send(JSON.stringify({ t: 't', k }));
+            this.logger.log(`[WS] Subscribed ${tokens.length} token(s) (total subscribed: ${this.subscribedKeys.size}).`);
+        }
+    }
+
+    /** Returns the latest WS tick LTP for a token, or null if not yet received */
+    getTickPrice(token: string): number | null {
+        return this.tickCache.get(token) ?? null;
+    }
+
+    /** Close WS, clear tick cache, and cancel pending reconnect (e.g. EOD) */
+    disconnectTickFeed(): void {
+        this.wsShouldRun = false;
+        if (this.wsReconnectTimer) { clearTimeout(this.wsReconnectTimer); this.wsReconnectTimer = null; }
+        this.ws?.close();
+        this.ws = null;
+        this.tickCache.clear();
+        this.subscribedKeys.clear();
+        this.logger.log('[WS] Tick feed disconnected and cache cleared.');
+    }
+
+    /** EOD cleanup: disconnect feed at 3:30 PM IST so tokens don't carry over to next day */
+    @Cron('30 15 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    eodTickFeedCleanup(): void {
+        this.disconnectTickFeed();
     }
 
     /**

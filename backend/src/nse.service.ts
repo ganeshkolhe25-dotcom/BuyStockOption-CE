@@ -344,19 +344,55 @@ export class NseService implements OnModuleInit {
         return ltp ? { ltp, prevClose: ltp } : null;
     }
 
+    /**
+     * Batch LTP fetch — reads from the WS tick cache first for zero-latency prices.
+     * Only falls back to REST GetQuotes for symbols not yet in the tick cache
+     * (e.g. before the morning scan subscribes them, or after a WS reconnect gap).
+     */
     async getBatchLTP(symbols: string[]): Promise<Record<string, number>> {
-        const tokens = symbols.map(s => this.tokenMap.get(s)).filter(Boolean) as string[];
-        if (tokens.length === 0) return {};
-
-        const results = await this.shoonya.getMultiQuotes('NSE', tokens);
         const priceMap: Record<string, number> = {};
+        const restSymbols: string[] = [];
 
-        for (const item of results) {
-            if (item.lp && item.tsym) {
-                const sym = item.tsym.replace('-EQ', '');
-                priceMap[sym] = parseFloat(item.lp);
+        for (const sym of symbols) {
+            const token = this.tokenMap.get(sym);
+            if (!token) continue;
+            const tick = this.shoonya.getTickPrice(token);
+            if (tick !== null) {
+                priceMap[sym] = tick;
+            } else {
+                restSymbols.push(sym);
             }
         }
+
+        // REST fallback for symbols not yet in the tick cache
+        if (restSymbols.length > 0) {
+            const restTokens = restSymbols.map(s => this.tokenMap.get(s)).filter(Boolean) as string[];
+            const results = await this.shoonya.getMultiQuotes('NSE', restTokens);
+            for (const item of results) {
+                if (item.lp && item.tsym) {
+                    priceMap[item.tsym.replace('-EQ', '')] = parseFloat(item.lp);
+                }
+            }
+            this.logger.debug(`[WS] getBatchLTP: ${symbols.length - restSymbols.length} from tick cache, ${restSymbols.length} via REST.`);
+        }
+
         return priceMap;
+    }
+
+    /** Open (or no-op if already open) the Shoonya tick feed WebSocket */
+    async connectTickFeed(): Promise<void> {
+        await this.shoonya.connectTickFeed();
+    }
+
+    /**
+     * Subscribe a list of stock symbols to the WS tick feed.
+     * Converts symbols → NSE tokens using the resolved tokenMap.
+     * Safe to call before the connection handshake completes — keys are buffered.
+     */
+    subscribeForLiveFeed(symbols: string[]): void {
+        const tokens = symbols.map(s => this.tokenMap.get(s)).filter(Boolean) as string[];
+        if (tokens.length === 0) return;
+        this.shoonya.subscribeTokens('NSE', tokens);
+        this.logger.log(`[WS] Subscribed live feed for ${tokens.length}/${symbols.length} resolved symbols.`);
     }
 }

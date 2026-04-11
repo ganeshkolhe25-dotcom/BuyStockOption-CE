@@ -109,6 +109,16 @@ export class ScannerService implements OnModuleInit {
             }), 43200000); // 12 hours TTL
 
             this.logger.log(`✅ Morning Scan Complete. Stored ${processed.length} Nifty 200 Setups.`);
+
+            // ── Subscribe all scanned symbols to WS tick feed ──────────────────
+            // After this, getBatchLTP() reads from the in-memory tick cache
+            // instead of calling REST for every 15-second syncLiveScannerPrices poll.
+            try {
+                await this.nseService.connectTickFeed();
+                this.nseService.subscribeForLiveFeed(processed.map((s: any) => s.symbol));
+            } catch (wsErr: any) {
+                this.logger.warn(`[WS] Tick feed subscription failed — REST fallback active: ${wsErr.message}`);
+            }
         } catch (error) {
             this.logger.error(`Automated Scan Failed: ${error.message}`);
         }
