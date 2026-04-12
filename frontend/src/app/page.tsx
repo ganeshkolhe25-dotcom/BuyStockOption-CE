@@ -36,10 +36,10 @@ export default function Home() {
   const [portfolio, setPortfolio] = useState<any>({
     dailyTotalPnl: 0,
     cumulativeTotalPnl: 0,
-    availableFunds: 300000,
-    totalCapital: 300000,
+    availableFunds: 100000,
+    totalCapital: 100000,
     usedCapital: 0,
-    initialFunds: 300000,
+    initialFunds: 100000,
     positions: [],
     isHalted: false,
   });
@@ -47,7 +47,7 @@ export default function Home() {
   const [watchlist, setWatchlist] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'scanner' | 'watchlist' | 'positions' | 'history'>('scanner');
   const [mainTab, setMainTab] = useState<'dashboard' | 'gann9' | 'gannAngle' | 'ema5' | 'shoonya'>('dashboard');
-  const [shoonyaConfig, setShoonyaConfig] = useState<any>({ uid: '', pwd: '', factor2: '', vc: '', appkey: '', webPwd: '', expiryMonth: 'APR', gann9MaxTrades: 5, gannAngleMaxTrades: 5, ema5MaxTrades: 5, gann9MaxLoss: -10000, gannAngleMaxLoss: -10000, ema5MaxLoss: -10000, gann9MaxProfit: 10000, gannAngleMaxProfit: 10000, ema5MaxProfit: 10000, gann9Enabled: true, gannAngleEnabled: false, ema5Enabled: false });
+  const [shoonyaConfig, setShoonyaConfig] = useState<any>({ uid: '', pwd: '', factor2: '', vc: '', appkey: '', webPwd: '', expiryMonth: 'APR', initialFunds: 100000, gann9MaxTrades: 5, gannAngleMaxTrades: 5, ema5MaxTrades: 5, gann9MaxLoss: -10000, gannAngleMaxLoss: -10000, ema5MaxLoss: -10000, gann9MaxProfit: 10000, gannAngleMaxProfit: 10000, ema5MaxProfit: 10000, gann9Enabled: true, gannAngleEnabled: false, ema5Enabled: false });
   const [shoonyaStatus, setShoonyaStatus] = useState<string | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [authCode, setAuthCode] = useState('');
@@ -195,7 +195,7 @@ export default function Home() {
   };
 
   const handleResetCapital = async () => {
-    if (!window.confirm("⚠️ Are you sure you want to RESET all active positions and restore capital? This will clear all 'OPEN' status trades and reset your balance to 1,000,000.")) return;
+    if (!window.confirm("⚠️ Are you sure you want to RESET all active positions and restore capital? This will clear all 'OPEN' status trades.")) return;
     try {
       setShoonyaStatus('Resetting capital...');
       const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
@@ -1277,6 +1277,18 @@ export default function Home() {
                       value={shoonyaConfig.maxTrades || 10}
                       onChange={(e) => setShoonyaConfig({ ...shoonyaConfig, maxTrades: parseInt(e.target.value) })}
                     />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-neutral-400 mb-1">Total Capital (₹)</label>
+                    <input
+                      type="number"
+                      min="1000"
+                      step="1000"
+                      className="w-full bg-neutral-950 border border-emerald-800/40 rounded-lg px-4 py-2.5 text-emerald-300 placeholder-neutral-700 outline-none focus:border-emerald-500/60 font-mono font-bold"
+                      value={shoonyaConfig.initialFunds || 100000}
+                      onChange={(e) => setShoonyaConfig({ ...shoonyaConfig, initialFunds: parseFloat(e.target.value) || 100000 })}
+                    />
+                    <p className="text-[11px] text-neutral-600 mt-1">Saved with &quot;Save Config&quot;. Requires restart to take effect.</p>
                   </div>
                   <div className="md:col-span-2">
                     <label className="block text-sm font-medium text-neutral-400 mb-1">Override Expiry Month</label>

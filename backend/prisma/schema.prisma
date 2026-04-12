@@ -67,4 +67,5 @@ model ShoonyaConfig {
   gann9Halted      Boolean @default(false)
   gannAngleHalted  Boolean @default(false)
   ema5Halted       Boolean @default(false)
+  initialFunds     Float   @default(100000)
 }

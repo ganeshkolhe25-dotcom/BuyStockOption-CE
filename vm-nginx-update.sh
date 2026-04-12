@@ -41,5 +41,9 @@ EOF
 
 nginx -t
 systemctl reload nginx
+
+# Re-apply SSL cert so HTTPS (443) is never lost after a config rewrite
+certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email ganeshkolhe25@gmail.com --redirect 2>&1 | tail -5
+
 echo "=== Nginx updated OK ==="
 systemctl status nginx --no-pager | head -3

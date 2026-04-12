@@ -24,7 +24,7 @@ export interface PaperPosition {
 export class PaperTradingService implements OnModuleInit {
     private readonly logger = new Logger(PaperTradingService.name);
 
-    private initialFunds = 1000000; // 10 Lakhs Virtual Capital (Updated from 3L)
+    private initialFunds = 100000; // Default 1 Lakh — overridden by DB value on init
     private DEFAULT_MAX_LOSS = -10000; // Risk Guard Limit per strategy
     private haltedStrategies = new Set<string>();
 
@@ -63,7 +63,7 @@ export class PaperTradingService implements OnModuleInit {
             this.logger.error('Failed to cleanup orphaned trades on init', e);
         }
 
-        // ── Restore halt state from DB so halted strategies stay halted across restarts ──
+        // ── Restore halt state + initialFunds from DB across restarts ──
         try {
             const config = await this.prisma.shoonyaConfig.findFirst();
             if (config) {
@@ -72,6 +72,10 @@ export class PaperTradingService implements OnModuleInit {
                 if (config.ema5Halted)      this.haltedStrategies.add('EMA_5');
                 if (this.haltedStrategies.size > 0) {
                     this.logger.warn(`⚠️ Halt state restored from DB: [${Array.from(this.haltedStrategies).join(', ')}]`);
+                }
+                if (config.initialFunds && config.initialFunds > 0) {
+                    this.initialFunds = config.initialFunds;
+                    this.logger.log(`💰 Capital restored from DB: ₹${this.initialFunds.toLocaleString()}`);
                 }
             }
         } catch (e) {

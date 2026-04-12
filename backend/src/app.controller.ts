@@ -107,7 +107,8 @@ export class AppController {
           expiryMonth: body.expiryMonth || 'APR',
           gann9Enabled: body.gann9Enabled !== undefined ? Boolean(body.gann9Enabled) : true,
           gannAngleEnabled: body.gannAngleEnabled !== undefined ? Boolean(body.gannAngleEnabled) : false,
-          ema5Enabled: body.ema5Enabled !== undefined ? Boolean(body.ema5Enabled) : false
+          ema5Enabled: body.ema5Enabled !== undefined ? Boolean(body.ema5Enabled) : false,
+          initialFunds: parseFloat(body.initialFunds) || 100000,
         }
       });
     } else {
@@ -133,7 +134,8 @@ export class AppController {
           expiryMonth: body.expiryMonth || 'APR',
           gann9Enabled: body.gann9Enabled !== undefined ? Boolean(body.gann9Enabled) : true,
           gannAngleEnabled: body.gannAngleEnabled !== undefined ? Boolean(body.gannAngleEnabled) : false,
-          ema5Enabled: body.ema5Enabled !== undefined ? Boolean(body.ema5Enabled) : false
+          ema5Enabled: body.ema5Enabled !== undefined ? Boolean(body.ema5Enabled) : false,
+          initialFunds: parseFloat(body.initialFunds) || 100000,
         }
       });
     }
