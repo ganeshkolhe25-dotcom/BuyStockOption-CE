@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import axios from 'axios';
 import * as crypto from 'crypto';
@@ -22,7 +22,7 @@ export interface OptionContract {
 }
 
 @Injectable()
-export class ShoonyaService {
+export class ShoonyaService implements OnModuleInit {
     private readonly logger = new Logger(ShoonyaService.name);
 
     // Data/trading API endpoint (SearchScrip, GetQuotes, TPSeries, PlaceOrder, etc.)
@@ -39,15 +39,20 @@ export class ShoonyaService {
     private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private readonly subscribedKeys = new Set<string>(); // "NSE|token" keys
 
-    constructor(private readonly prisma: PrismaService) {
-        // Load persisted session token from DB into memory at startup (non-blocking fire-and-forget).
-        // Only set if no fresh token has already been obtained (forceReauth may run concurrently).
-        this.prisma.shoonyaConfig.findFirst().then(cfg => {
-            if (!this.sessionToken && cfg?.sessionToken && cfg.sessionToken.length > 10) {
+    constructor(private readonly prisma: PrismaService) {}
+
+    async onModuleInit() {
+        // Load persisted session token from DB synchronously before any other service's
+        // onModuleInit runs (NestJS resolves in dependency order, so ShoonyaService loads
+        // before NseService). This prevents the race condition where NseService called
+        // authenticate() before the token promise resolved.
+        try {
+            const cfg = await this.prisma.shoonyaConfig.findFirst();
+            if (cfg?.sessionToken && cfg.sessionToken.length > 10) {
                 this.sessionToken = cfg.sessionToken;
                 this.logger.log('Loaded persisted Shoonya session token from DB into memory.');
             }
-        }).catch(() => {});
+        } catch { /* DB not ready — sessionToken stays null, authenticate() will handle it */ }
     }
 
     async getConfig() {
