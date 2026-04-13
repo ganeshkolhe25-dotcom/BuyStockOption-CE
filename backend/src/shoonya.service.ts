@@ -263,7 +263,9 @@ export class ShoonyaService implements OnModuleInit {
         }
 
         // Secondary: try loading token from DB now (catches the startup race where Prisma
-        // wasn't ready during onModuleInit, so the token was never loaded into memory)
+        // wasn't ready during onModuleInit, so the token was never loaded into memory).
+        // Note: we trust a non-empty DB token here; if it's expired, the first API call
+        // will catch the 401 and call clearExpiredSession() to force a fresh QuickAuth.
         try {
             const cfg = await this.prisma.shoonyaConfig.findFirst();
             if (cfg?.sessionToken && cfg.sessionToken.length > 10) {
@@ -640,7 +642,7 @@ export class ShoonyaService implements OnModuleInit {
     /**
      * Resolve Symbol Name to Security Token Cache / Helper
      */
-    async searchSecurityToken(symbol: string, exch = 'NSE'): Promise<string | null> {
+    async searchSecurityToken(symbol: string, exch = 'NSE', retry = true): Promise<string | null> {
         try {
             if (!this.sessionToken) await this.authenticate();
             const config = await this.getConfig();
@@ -655,6 +657,22 @@ export class ShoonyaService implements OnModuleInit {
             const response = await axios.post(`${this.endpoint}/SearchScrip`, payload, {
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
             });
+
+            // Session expired — clear token, re-auth, retry once
+            if (response.data.stat === 'Not_Ok' && response.data.emsg?.toLowerCase().includes('session')) {
+                if (retry) {
+                    this.logger.warn(`Session expired during SearchScrip. Clearing token and re-authenticating...`);
+                    this.sessionToken = null;
+                    // Also clear from DB so the next authenticate() doesn't reload the expired token
+                    try {
+                        const cfg = await this.prisma.shoonyaConfig.findFirst();
+                        if (cfg) await this.prisma.shoonyaConfig.update({ where: { id: cfg.id }, data: { sessionToken: '' } });
+                    } catch { }
+                    const reauthed = await this.authenticate();
+                    if (reauthed) return this.searchSecurityToken(symbol, exch, false);
+                }
+                return null;
+            }
 
             if (response.data.stat === 'Ok' && response.data.values?.length > 0) {
                 // Find exact match or first result
