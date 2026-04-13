@@ -102,10 +102,10 @@ export class NseService implements OnModuleInit {
     async refreshSecurityTokens() {
         this.logger.log('NseService Initialized. Starting Token Resolution for NIFTY Stocks...');
 
-        // Force fresh QuickAuth so all parallel searchSecurityToken calls reuse
-        // the same token. The constructor may have loaded a stale DB token which
-        // would be overwritten here, preventing "Session Expired" on SearchScrip.
-        const authed = await this.shoonya.forceReauth();
+        // Use the existing session token if available (loaded from DB at startup),
+        // falling back to fresh auth only when no token is in memory.
+        // forceReauth() was wiping a valid persisted token then failing on QuickAuth.
+        const authed = await this.shoonya.authenticate();
         if (!authed) {
             this.logger.error('Shoonya authentication failed. Skipping token resolution.');
             return;
