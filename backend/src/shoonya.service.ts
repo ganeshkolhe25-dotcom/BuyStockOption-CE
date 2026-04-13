@@ -255,12 +255,24 @@ export class ShoonyaService implements OnModuleInit {
     async authenticate() {
         this.logger.log('Initiating Shoonya Authentication...');
 
-        // Primary: use in-memory session token (loaded from DB at startup by constructor)
+        // Primary: use in-memory session token (loaded from DB at startup by onModuleInit)
         if (this.sessionToken && this.sessionToken.length > 10) {
             this.lastAuthError = null;
             this.logger.log('✅ Using in-memory Shoonya session token.');
             return true;
         }
+
+        // Secondary: try loading token from DB now (catches the startup race where Prisma
+        // wasn't ready during onModuleInit, so the token was never loaded into memory)
+        try {
+            const cfg = await this.prisma.shoonyaConfig.findFirst();
+            if (cfg?.sessionToken && cfg.sessionToken.length > 10) {
+                this.sessionToken = cfg.sessionToken;
+                this.lastAuthError = null;
+                this.logger.log('✅ Loaded Shoonya session token from DB on-demand (startup race recovery).');
+                return true;
+            }
+        } catch { /* DB still not ready — fall through to QuickAuth */ }
 
         // Fallback: QuickAuth with credentials
         try {
