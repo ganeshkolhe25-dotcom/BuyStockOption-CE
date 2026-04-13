@@ -31,6 +31,8 @@ export class ShoonyaService implements OnModuleInit {
     private readonly authEndpoint = process.env.SHOONYA_AUTH_URL || 'https://trade.shoonya.com/NorenWClientAPI';
     private sessionToken: string | null = null;
     public lastAuthError: string | null = null;
+    // Prevents multiple concurrent 401 handlers from each triggering a re-auth
+    private sessionClearInProgress = false;
 
     // ── WebSocket tick feed ────────────────────────────────────────────────
     private ws: WebSocket | null = null;
@@ -658,22 +660,6 @@ export class ShoonyaService implements OnModuleInit {
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
             });
 
-            // Session expired — clear token, re-auth, retry once
-            if (response.data.stat === 'Not_Ok' && response.data.emsg?.toLowerCase().includes('session')) {
-                if (retry) {
-                    this.logger.warn(`Session expired during SearchScrip. Clearing token and re-authenticating...`);
-                    this.sessionToken = null;
-                    // Also clear from DB so the next authenticate() doesn't reload the expired token
-                    try {
-                        const cfg = await this.prisma.shoonyaConfig.findFirst();
-                        if (cfg) await this.prisma.shoonyaConfig.update({ where: { id: cfg.id }, data: { sessionToken: '' } });
-                    } catch { }
-                    const reauthed = await this.authenticate();
-                    if (reauthed) return this.searchSecurityToken(symbol, exch, false);
-                }
-                return null;
-            }
-
             if (response.data.stat === 'Ok' && response.data.values?.length > 0) {
                 // Find exact match or first result
                 const match = response.data.values.find((v: any) => v.tsym === symbol || v.tsym === `${symbol}-EQ`);
@@ -681,7 +667,31 @@ export class ShoonyaService implements OnModuleInit {
             }
             return null;
         } catch (error) {
-            const body = JSON.stringify(error.response?.data || error.response?.status || error.message);
+            const responseData = error.response?.data;
+            const isSessionExpired =
+                error.response?.status === 401 ||
+                (responseData?.emsg && responseData.emsg.toLowerCase().includes('session'));
+
+            // Session expired — clear once (lock prevents stampede from parallel batch calls),
+            // wipe the stale DB token so authenticate() won't reload it, then retry
+            if (isSessionExpired && retry && !this.sessionClearInProgress) {
+                this.sessionClearInProgress = true;
+                this.logger.warn(`Session expired (401) on SearchScrip. Clearing token and re-authenticating...`);
+                this.sessionToken = null;
+                try {
+                    const cfg = await this.prisma.shoonyaConfig.findFirst();
+                    if (cfg) await this.prisma.shoonyaConfig.update({ where: { id: cfg.id }, data: { sessionToken: '' } });
+                } catch { }
+                const reauthed = await this.authenticate();
+                this.sessionClearInProgress = false;
+                if (reauthed) return this.searchSecurityToken(symbol, exch, false);
+                return null;
+            }
+
+            // Another concurrent call is already handling the re-auth — just skip this symbol
+            if (isSessionExpired && retry && this.sessionClearInProgress) return null;
+
+            const body = JSON.stringify(responseData || error.response?.status || error.message);
             this.logger.error(`Symbol Resolution Error [${symbol}]: ${error.message} | Body: ${body}`);
             return null;
         }
