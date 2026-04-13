@@ -62,7 +62,7 @@ export class AppController {
     const config = await this.prisma.shoonyaConfig.findFirst();
     if (config) {
       const { pwd, webPwd, sessionToken, ...safeConfig } = config;
-      return safeConfig;
+      return { ...safeConfig, webPwdSet: !!(webPwd && webPwd.length > 0) };
     }
 
     return {
@@ -92,7 +92,9 @@ export class AppController {
           factor2: body.factor2,
           vc: body.vc,
           appkey: body.appkey,
-          webPwd: body.webPwd || '',
+          // Preserve existing webPwd if none supplied (GET response strips it for security,
+          // so a page-reload + re-save would otherwise blank it out)
+          webPwd: body.webPwd || config.webPwd || '',
           tradingMode: body.tradingMode || 'PAPER',
           maxTrades: parseInt(body.maxTrades) || 10,
           gann9MaxTrades: parseInt(body.gann9MaxTrades) || 5,
@@ -139,6 +141,7 @@ export class AppController {
         }
       });
     }
+    await this.paperTrading.syncCapital();
     return { status: 'success', data: config };
   }
 

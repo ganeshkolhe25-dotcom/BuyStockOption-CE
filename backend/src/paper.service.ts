@@ -295,6 +295,11 @@ export class PaperTradingService implements OnModuleInit {
     async getPortfolioSummary() {
         const unrealized = this.getLiveUnrealizedPnl();
 
+        // Always read initialFunds fresh from DB so config changes reflect immediately without restart
+        const cfg = await this.prisma.shoonyaConfig.findFirst();
+        const initialFunds = (cfg?.initialFunds && cfg.initialFunds > 0) ? cfg.initialFunds : this.initialFunds;
+        this.initialFunds = initialFunds; // keep in-memory in sync for margin checks
+
         // Get all OPEN trades from database to calculate exact margin blocked
         const openTrades = await this.prisma.tradeHistory.findMany({ where: { status: 'OPEN' } });
         let blockedMargin = 0;
@@ -321,7 +326,7 @@ export class PaperTradingService implements OnModuleInit {
         const cumulativeTotalPnl = cumulativeRealized + unrealized;
 
         // Available Capital = Initial + All Time Realized Profit - Margin blocked in active trades
-        const dynamicallyCalculatedAvailableFunds = this.initialFunds + cumulativeRealized - blockedMargin;
+        const dynamicallyCalculatedAvailableFunds = initialFunds + cumulativeRealized - blockedMargin;
 
         // Fetch daily grouped PNL for the ledger
         const dailyStatsRaw = await this.prisma.tradeHistory.findMany({
@@ -340,8 +345,8 @@ export class PaperTradingService implements OnModuleInit {
         });
 
         return {
-            initialFunds: this.initialFunds,
-            totalCapital: this.initialFunds + cumulativeRealized,
+            initialFunds: initialFunds,
+            totalCapital: initialFunds + cumulativeRealized,
             usedCapital: blockedMargin,
             availableFunds: dynamicallyCalculatedAvailableFunds,
             dailyRealizedPnl: dailyRealizedPnl,
@@ -355,6 +360,15 @@ export class PaperTradingService implements OnModuleInit {
             positions: Array.from(this.activePositions.values()),
             dailyLedger: Object.entries(dailyLedger).map(([date, pnl]) => ({ date, pnl })).slice(0, 7) // Last 7 days
         };
+    }
+
+    /** Refresh in-memory initialFunds from DB — called after config save so margin checks are current */
+    async syncCapital(): Promise<void> {
+        const cfg = await this.prisma.shoonyaConfig.findFirst();
+        if (cfg?.initialFunds && cfg.initialFunds > 0) {
+            this.initialFunds = cfg.initialFunds;
+            this.logger.log(`💰 Capital synced from config: ₹${this.initialFunds.toLocaleString()}`);
+        }
     }
 
     private isTradingHalted = false;

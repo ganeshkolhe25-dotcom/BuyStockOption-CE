@@ -7,6 +7,7 @@ import { PrismaService } from './prisma.service';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
+import WebSocket from 'ws';
 const execAsync = promisify(exec);
 
 export interface OptionContract {
@@ -679,17 +680,17 @@ export class ShoonyaService {
         const socket = new WebSocket(wsUrl);
         this.ws = socket;
 
-        socket.onopen = () => {
+        socket.on('open', () => {
             this.logger.log('[WS] Connected. Sending handshake...');
             socket.send(JSON.stringify({
                 t: 'c', uid: config.uid, actid: config.uid,
                 susertoken: this.sessionToken, source: 'API'
             }));
-        };
+        });
 
-        socket.onmessage = (event: MessageEvent) => {
+        socket.on('message', (data: WebSocket.RawData) => {
             try {
-                const msg = JSON.parse(event.data as string);
+                const msg = JSON.parse(data.toString());
                 if (msg.t === 'ck') {
                     // Handshake acknowledged — re-send all subscriptions
                     this.logger.log(`[WS] Handshake OK. Re-subscribing ${this.subscribedKeys.size} token(s).`);
@@ -703,18 +704,18 @@ export class ShoonyaService {
                     }
                 }
             } catch { /* ignore malformed frames */ }
-        };
+        });
 
-        socket.onclose = (event: CloseEvent) => {
-            this.logger.warn(`[WS] Disconnected (code ${event.code}). ${this.wsShouldRun ? 'Reconnecting in 5s…' : 'Closed permanently.'}`);
+        socket.on('close', (code: number) => {
+            this.logger.warn(`[WS] Disconnected (code ${code}). ${this.wsShouldRun ? 'Reconnecting in 5s…' : 'Closed permanently.'}`);
             this.ws = null;
             if (this.wsShouldRun) this.scheduleWsReconnect();
-        };
+        });
 
-        socket.onerror = () => {
+        socket.on('error', () => {
             this.logger.error('[WS] Connection error — closing socket.');
             socket.close();
-        };
+        });
     }
 
     private scheduleWsReconnect(): void {

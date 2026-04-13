@@ -1245,12 +1245,15 @@ export default function Home() {
                     <label className="block text-sm font-medium text-neutral-400 mb-1">
                       Web Login Password
                       <span className="ml-2 text-[10px] text-amber-500/70 font-normal uppercase tracking-wide">For Auto Connect</span>
+                      {shoonyaConfig.webPwdSet && !shoonyaConfig.webPwd && (
+                        <span className="ml-2 text-[10px] text-emerald-500 font-normal">Password saved</span>
+                      )}
                     </label>
                     <input
                       type="password"
                       className="w-full bg-neutral-950 border border-amber-500/20 rounded-lg px-4 py-2.5 text-neutral-100 placeholder-neutral-600 outline-none focus:border-amber-500/50"
                       value={shoonyaConfig.webPwd || ''}
-                      placeholder="Plain password (not hashed)"
+                      placeholder={shoonyaConfig.webPwdSet ? '••••••••  (saved — leave blank to keep)' : 'Plain password (not hashed)'}
                       onChange={(e) => setShoonyaConfig({ ...shoonyaConfig, webPwd: e.target.value })}
                     />
                   </div>
