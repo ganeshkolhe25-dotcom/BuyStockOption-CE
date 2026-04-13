@@ -33,6 +33,13 @@ export class ShoonyaService implements OnModuleInit {
     public lastAuthError: string | null = null;
     // Prevents multiple concurrent 401 handlers from each triggering a re-auth
     private sessionClearInProgress = false;
+    // Callback registered by NseService to trigger token refresh after daily re-auth
+    private onSessionRefreshed: (() => Promise<void>) | null = null;
+
+    /** NseService calls this once during its onModuleInit to hook into the daily refresh cycle */
+    registerSessionRefreshHook(cb: () => Promise<void>) {
+        this.onSessionRefreshed = cb;
+    }
 
     // ── WebSocket tick feed ────────────────────────────────────────────────
     private ws: WebSocket | null = null;
@@ -242,10 +249,16 @@ export class ShoonyaService implements OnModuleInit {
         this.sessionToken = null; // Force fresh login, don't reuse yesterday's token
         const result = await this.autoConnect();
         if (result.success) {
-            this.logger.log('✅ Daily token refresh succeeded. Bot is ready for market open.');
+            this.logger.log('✅ Daily token refresh succeeded. Triggering NSE token resolution...');
         } else {
             this.logger.warn(`⚠️ autoConnect failed (${result.message}). Falling back to QuickAuth...`);
             await this.authenticate(); // QuickAuth as last-resort fallback
+        }
+        // Fire the NseService token refresh immediately after getting a fresh session
+        // (rather than waiting for the 9:10 AM cron, which is a safety-net fallback)
+        if (this.onSessionRefreshed) {
+            this.logger.log('🔄 Calling registered NSE token refresh hook...');
+            await this.onSessionRefreshed();
         }
     }
 

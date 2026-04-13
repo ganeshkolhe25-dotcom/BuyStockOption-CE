@@ -92,13 +92,18 @@ export class NseService implements OnModuleInit {
     constructor(private readonly shoonya: ShoonyaService) {}
 
     async onModuleInit() {
+        // Register callback so ShoonyaService.dailyTokenRefresh() can trigger us
+        // immediately after it gets a fresh session, rather than waiting for the 9:10 AM cron
+        this.shoonya.registerSessionRefreshHook(() => this.refreshSecurityTokens());
         await this.refreshSecurityTokens();
     }
 
     /**
-     * Proactive Daily Refresh at 8:30 AM before market open
+     * Proactive Daily Refresh at 9:10 AM — runs AFTER dailyTokenRefresh (9:00 AM)
+     * obtains a fresh OAuth session via autoConnect, so the token resolution
+     * always uses a valid session key.
      */
-    @Cron('30 08 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    @Cron('10 09 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async refreshSecurityTokens() {
         this.logger.log('NseService Initialized. Starting Token Resolution for NIFTY Stocks...');
 
