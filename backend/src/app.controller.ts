@@ -61,8 +61,8 @@ export class AppController {
   async getShoonyaConfig() {
     const config = await this.prisma.shoonyaConfig.findFirst();
     if (config) {
-      const { pwd, webPwd, sessionToken, ...safeConfig } = config;
-      return { ...safeConfig, webPwdSet: !!(webPwd && webPwd.length > 0) };
+      const { pwd, webPwd, sessionToken, secretCode, ...safeConfig } = config;
+      return { ...safeConfig, webPwdSet: !!(webPwd && webPwd.length > 0), secretCodeSet: !!(secretCode && secretCode.length > 0) };
     }
 
     return {
@@ -92,6 +92,7 @@ export class AppController {
           factor2: body.factor2,
           vc: body.vc,
           appkey: body.appkey,
+          secretCode: body.secretCode || config.secretCode || '',
           // Preserve existing webPwd if none supplied (GET response strips it for security,
           // so a page-reload + re-save would otherwise blank it out)
           webPwd: body.webPwd || config.webPwd || '',
@@ -121,6 +122,7 @@ export class AppController {
           factor2: body.factor2,
           vc: body.vc,
           appkey: body.appkey,
+          secretCode: body.secretCode || '',
           webPwd: body.webPwd || '',
           tradingMode: body.tradingMode || 'PAPER',
           maxTrades: parseInt(body.maxTrades) || 10,
@@ -168,6 +170,15 @@ export class AppController {
   async autoConnect() {
     const result = await this.shoonyaService.autoConnect();
     return { status: result.success ? 'success' : 'error', message: result.message, debug: (result as any).debug };
+  }
+
+  @Post('shoonya-set-session')
+  async setSessionToken(@Body() body: { sessionToken: string }) {
+    if (!body?.sessionToken?.trim()) {
+      return { status: 'error', message: 'sessionToken is required' };
+    }
+    const result = await this.shoonyaService.injectSessionToken(body.sessionToken.trim());
+    return { status: result.success ? 'success' : 'error', message: result.message };
   }
 
   @Get()

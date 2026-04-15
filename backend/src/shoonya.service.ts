@@ -46,6 +46,7 @@ export class ShoonyaService implements OnModuleInit {
     private readonly tickCache = new Map<string, number>(); // NSE token → latest LTP
     private wsShouldRun = false;
     private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    private wsHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
     private readonly subscribedKeys = new Set<string>(); // "NSE|token" keys
 
     constructor(private readonly prisma: PrismaService) {}
@@ -89,6 +90,34 @@ export class ShoonyaService implements OnModuleInit {
     }
 
     /**
+     * Directly inject a pre-obtained session token (e.g. from a local machine exchange).
+     * Validates by making a test API call, then persists to memory + DB.
+     */
+    async injectSessionToken(token: string): Promise<{ success: boolean; message: string }> {
+        try {
+            // Quick validation — search for a known symbol to confirm token works
+            const testRes = await axios.post(`${this.endpoint}/SearchScrip`,
+                `jData=${JSON.stringify({ uid: (await this.getConfig()).uid, stext: 'NIFTY', exch: 'NSE' })}&jKey=${token}`,
+                { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 8000 }
+            );
+            if (testRes.data?.stat === 'Not_Ok') {
+                return { success: false, message: `Token validation failed: ${testRes.data.emsg}` };
+            }
+            this.sessionToken = token;
+            this.lastAuthError = null;
+            const existing = await this.prisma.shoonyaConfig.findFirst();
+            if (existing) {
+                await this.prisma.shoonyaConfig.update({ where: { id: existing.id }, data: { sessionToken: token } });
+            }
+            this.logger.log('✅ Session token injected and validated successfully.');
+            if (this.onSessionRefreshed) this.onSessionRefreshed();
+            return { success: true, message: 'Session token injected and active.' };
+        } catch (err: any) {
+            return { success: false, message: err.message || 'Injection failed' };
+        }
+    }
+
+    /**
      * Authenticate to Finvasia Shoonya via QuickAuth
      */
     /**
@@ -105,26 +134,30 @@ export class ShoonyaService implements OnModuleInit {
             const appkeyHash = crypto.createHash('sha256').update(`${uid}|${appkey}`).digest('hex');
             const clientId = `${uid}_U`; // Shoonya OAuth uses CLIENT_ID = UID_U format
 
-            // Try every known checksum variant + uid variants (plain uid and uid_U)
+            // Shoonya GenAcsTok checksum = SHA256(client_id + Secret_Code + auth_code)
+            // Source: NorenRestApiOAuth SDK getAccessToken() method
+            const dbConfig = await this.prisma.shoonyaConfig.findFirst();
+            const secretCode = (dbConfig?.secretCode || '').trim();
+
             const checksumVariants: Array<{ checksum: string; uidVal: string; label: string }> = [
-                // Using hashed appkey (same as QuickAuth) — most likely correct
+                // ✅ Official formula: SHA256(client_id + Secret_Code + auth_code), uid=UID in payload
+                ...(secretCode ? [
+                    { checksum: crypto.createHash('sha256').update(`${clientId}${secretCode}${authCode}`).digest('hex'), uidVal: uid, label: 'clientId+secret+code [OFFICIAL]' },
+                ] : []),
+                // Fallback variants (kept for safety)
+                ...(secretCode ? [
+                    { checksum: crypto.createHash('sha256').update(`${secretCode}${authCode}`).digest('hex'),   uidVal: uid,      label: 'secret+code' },
+                    { checksum: crypto.createHash('sha256').update(`${secretCode}|${authCode}`).digest('hex'),  uidVal: uid,      label: 'secret|code' },
+                ] : []),
                 { checksum: crypto.createHash('sha256').update(`${appkeyHash}${authCode}`).digest('hex'),       uidVal: uid,      label: 'hash(uid|key)+code' },
-                { checksum: crypto.createHash('sha256').update(`${appkeyHash}|${authCode}`).digest('hex'),      uidVal: uid,      label: 'hash(uid|key)|code' },
-                // Raw appkey variants
                 { checksum: crypto.createHash('sha256').update(`${appkey}${authCode}`).digest('hex'),           uidVal: uid,      label: 'key+code' },
-                { checksum: crypto.createHash('sha256').update(`${uid}|${appkey}|${authCode}`).digest('hex'),   uidVal: uid,      label: 'uid|key|code' },
-                { checksum: crypto.createHash('sha256').update(`${uid}|${authCode}|${appkey}`).digest('hex'),   uidVal: uid,      label: 'uid|code|key' },
-                { checksum: crypto.createHash('sha256').update(`${authCode}|${appkey}`).digest('hex'),          uidVal: uid,      label: 'code|key' },
-                // Same variants with CLIENT_ID (uid_U) as uid in payload
-                { checksum: crypto.createHash('sha256').update(`${appkeyHash}${authCode}`).digest('hex'),       uidVal: clientId, label: 'hash(uid|key)+code [clientId]' },
-                { checksum: crypto.createHash('sha256').update(`${appkey}${authCode}`).digest('hex'),           uidVal: clientId, label: 'key+code [clientId]' },
                 { checksum: crypto.createHash('sha256').update(`${clientId}|${appkey}|${authCode}`).digest('hex'), uidVal: clientId, label: 'clientId|key|code' },
             ];
 
             for (const { checksum, uidVal, label } of checksumVariants) {
                 try {
                     const payload = `jData=${JSON.stringify({ uid: uidVal, code: authCode, checksum })}`;
-                    const response = await axios.post('https://trade.shoonya.com/NorenWClientAPI/GenAcsTok', payload, {
+                    const response = await axios.post('https://api.shoonya.com/NorenWClientAPI/GenAcsTok', payload, {
                         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                         timeout: 15000,
                     });
@@ -180,10 +213,11 @@ export class ShoonyaService implements OnModuleInit {
             const scriptPath = path.join(process.cwd(), 'getAuthCode.py');
             const env = {
                 ...process.env,
-                SHOONYA_UID:     dbConfig.uid.trim(),
-                SHOONYA_WEB_PWD: dbConfig.webPwd.trim(),
-                SHOONYA_TOTP:    dbConfig.factor2.trim(),
-                SHOONYA_APPKEY:  dbConfig.appkey.trim(),
+                SHOONYA_UID:         dbConfig.uid.trim(),
+                SHOONYA_WEB_PWD:     dbConfig.webPwd.trim(),
+                SHOONYA_TOTP:        dbConfig.factor2.trim(),
+                SHOONYA_APPKEY:      dbConfig.appkey.trim(),
+                SHOONYA_SECRET_CODE: dbConfig.secretCode?.trim() || '',
             };
 
             this.logger.log(`Spawning: python3 ${scriptPath}`);
@@ -360,15 +394,7 @@ export class ShoonyaService implements OnModuleInit {
                 return true;
             } else {
                 this.lastAuthError = response.data.emsg || 'Unknown Error';
-                this.logger.warn(`QuickAuth rejected: ${this.lastAuthError}. Falling back to autoConnect (getAuthCode.py)...`);
-                // Shoonya requires fresh OAuth web login every morning — try the Python script
-                const autoResult = await this.autoConnect();
-                if (autoResult.success) {
-                    this.lastAuthError = null;
-                    return true;
-                }
-                this.lastAuthError = autoResult.message;
-                this.logger.error(`Both QuickAuth and autoConnect failed. Last error: ${this.lastAuthError}`);
+                this.logger.error(`QuickAuth rejected: ${this.lastAuthError}`);
                 return false;
             }
 
@@ -384,7 +410,7 @@ export class ShoonyaService implements OnModuleInit {
         if (!this.sessionToken) await this.authenticate();
         const config = await this.getConfig();
         const jData = { uid: config.uid, stext: `${symbol} ${strike}`, exch: 'NFO' };
-        const payload = `jData=${JSON.stringify(jData)}&jKey=${this.sessionToken}`;
+        const payload = `jData=${JSON.stringify(jData).replace(/&/g, '\\u0026')}&jKey=${this.sessionToken}`;
         const res = await axios.post(`${this.endpoint}/SearchScrip`, payload, {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 8000
         });
@@ -506,7 +532,7 @@ export class ShoonyaService implements OnModuleInit {
                     exch: 'NFO'
                 };
 
-                const payload = `jData=${JSON.stringify(jData)}&jKey=${this.sessionToken}`;
+                const payload = `jData=${JSON.stringify(jData).replace(/&/g, '\\u0026')}&jKey=${this.sessionToken}`;
                 const response = await axios.post(`${this.endpoint}/SearchScrip`, payload, {
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
                 });
@@ -615,7 +641,7 @@ export class ShoonyaService implements OnModuleInit {
      * Fetch Time Price Series (TPS) / Historical Candles from Shoonya
      * Interval: 1, 3, 5, 10, 15, 30, 60, 120, 240, D
      */
-    async getTimePriceSeries(exchange: string, token: string, interval: string, daysLimit = 2): Promise<any[]> {
+    async getTimePriceSeries(exchange: string, token: string, interval: string, daysLimit = 2, retry = true): Promise<any[]> {
         try {
             if (!this.sessionToken) await this.authenticate();
             const config = await this.getConfig();
@@ -629,8 +655,8 @@ export class ShoonyaService implements OnModuleInit {
                 uid: config.uid,
                 exch: exchange,
                 token: token,
-                st: startTime.getTime().toString().slice(0, 10), // Unix timestamp in seconds
-                et: endTime.getTime().toString().slice(0, 10),
+                st: Math.floor(startTime.getTime() / 1000).toString(), // Unix timestamp in seconds
+                et: Math.floor(endTime.getTime() / 1000).toString(),
                 intrv: interval
             };
 
@@ -643,12 +669,52 @@ export class ShoonyaService implements OnModuleInit {
                 return response.data; // Shoonya returns candles: {ssboe, time, into, inth, intl, intc, intv, ...}
             }
 
+            // Shoonya may return 401 as JSON stat instead of HTTP 401
+            const emsg = response.data?.emsg || '';
+            const isSessionErr = response.data?.stat === 'Not_Ok' &&
+                (emsg.toLowerCase().includes('session') || emsg.toLowerCase().includes('invalid'));
+
+            if (isSessionErr && retry && !this.sessionClearInProgress) {
+                this.sessionClearInProgress = true;
+                this.logger.warn(`Session expired on TPSeries (JSON). Clearing token and re-authenticating...`);
+                this.sessionToken = null;
+                try {
+                    const cfg = await this.prisma.shoonyaConfig.findFirst();
+                    if (cfg) await this.prisma.shoonyaConfig.update({ where: { id: cfg.id }, data: { sessionToken: '' } });
+                } catch { }
+                const reauthed = await this.authenticate();
+                this.sessionClearInProgress = false;
+                if (reauthed) return this.getTimePriceSeries(exchange, token, interval, daysLimit, false);
+                return [];
+            }
+
             if (response.data.stat !== 'Ok') {
-                this.logger.warn(`TPS Query returned non-Ok status for token ${token}: ${response.data.emsg || 'Unknown error'}`);
+                this.logger.warn(`TPS Query returned non-Ok status for token ${token}: ${emsg || 'Unknown error'}`);
             }
 
             return [];
         } catch (error) {
+            const responseData = error.response?.data;
+            const isSessionExpired =
+                error.response?.status === 401 ||
+                (responseData?.emsg && responseData.emsg.toLowerCase().includes('session'));
+
+            if (isSessionExpired && retry && !this.sessionClearInProgress) {
+                this.sessionClearInProgress = true;
+                this.logger.warn(`Session expired (401) on TPSeries. Clearing token and re-authenticating...`);
+                this.sessionToken = null;
+                try {
+                    const cfg = await this.prisma.shoonyaConfig.findFirst();
+                    if (cfg) await this.prisma.shoonyaConfig.update({ where: { id: cfg.id }, data: { sessionToken: '' } });
+                } catch { }
+                const reauthed = await this.authenticate();
+                this.sessionClearInProgress = false;
+                if (reauthed) return this.getTimePriceSeries(exchange, token, interval, daysLimit, false);
+                return [];
+            }
+
+            if (isSessionExpired && retry && this.sessionClearInProgress) return [];
+
             this.logger.error(`Shoonya TPS Error: ${error.message}`);
             return [];
         }
@@ -668,7 +734,7 @@ export class ShoonyaService implements OnModuleInit {
                 exch: exch
             };
 
-            const payload = `jData=${JSON.stringify(jData)}&jKey=${this.sessionToken}`;
+            const payload = `jData=${JSON.stringify(jData).replace(/&/g, '\\u0026')}&jKey=${this.sessionToken}`;
             const response = await axios.post(`${this.endpoint}/SearchScrip`, payload, {
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
             });
@@ -744,19 +810,28 @@ export class ShoonyaService implements OnModuleInit {
                 t: 'c', uid: config.uid, actid: config.uid,
                 susertoken: this.sessionToken, source: 'API'
             }));
+            // Send a WS-level ping every 30s to keep the connection alive
+            this.wsHeartbeatTimer = setInterval(() => {
+                if (socket.readyState === WebSocket.OPEN) socket.ping();
+            }, 30000);
         });
 
         socket.on('message', (data: WebSocket.RawData) => {
             try {
                 const msg = JSON.parse(data.toString());
                 if (msg.t === 'ck') {
+                    if (msg.s === 'Not_Ok') {
+                        this.logger.error(`[WS] Handshake REJECTED: ${msg.emsg || JSON.stringify(msg)}`);
+                        socket.close();
+                        return;
+                    }
                     // Handshake acknowledged — re-send all subscriptions
                     this.logger.log(`[WS] Handshake OK. Re-subscribing ${this.subscribedKeys.size} token(s).`);
                     if (this.subscribedKeys.size > 0) {
                         socket.send(JSON.stringify({ t: 't', k: Array.from(this.subscribedKeys).join('#') }));
                     }
-                } else if (msg.t === 'tf' || msg.t === 'dk') {
-                    // Price tick — update cache
+                } else if (msg.t === 'tk' || msg.t === 'tf' || msg.t === 'dk') {
+                    // tk = initial full tick on subscribe, tf = subsequent changed fields, dk = depth
                     if (msg.tk && msg.lp) {
                         this.tickCache.set(msg.tk, parseFloat(msg.lp));
                     }
@@ -766,6 +841,7 @@ export class ShoonyaService implements OnModuleInit {
 
         socket.on('close', (code: number) => {
             this.logger.warn(`[WS] Disconnected (code ${code}). ${this.wsShouldRun ? 'Reconnecting in 5s…' : 'Closed permanently.'}`);
+            if (this.wsHeartbeatTimer) { clearInterval(this.wsHeartbeatTimer); this.wsHeartbeatTimer = null; }
             this.ws = null;
             if (this.wsShouldRun) this.scheduleWsReconnect();
         });
@@ -807,6 +883,7 @@ export class ShoonyaService implements OnModuleInit {
     disconnectTickFeed(): void {
         this.wsShouldRun = false;
         if (this.wsReconnectTimer) { clearTimeout(this.wsReconnectTimer); this.wsReconnectTimer = null; }
+        if (this.wsHeartbeatTimer) { clearInterval(this.wsHeartbeatTimer); this.wsHeartbeatTimer = null; }
         this.ws?.close();
         this.ws = null;
         this.tickCache.clear();
@@ -884,7 +961,7 @@ export class ShoonyaService implements OnModuleInit {
                 prc: limitPrice > 0 ? limitPrice.toString() : '0',
                 prd: 'M', // Margin (M) / Normal Product / MIS (I)
                 trantype: 'B', // Buy
-                prctyp: limitPrice > 0 ? 'L' : 'MKT', // Always Limit when price available
+                prctyp: limitPrice > 0 ? 'LMT' : 'MKT', // Always Limit when price available
                 ret: 'DAY'
             };
 

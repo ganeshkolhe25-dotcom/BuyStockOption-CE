@@ -47,6 +47,7 @@ model ShoonyaConfig {
   factor2 String
   vc      String
   appkey           String
+  secretCode       String  @default("")
   sessionToken     String  @default("")
   webPwd           String  @default("")
   tradingMode      String  @default("PAPER")

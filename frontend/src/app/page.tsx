@@ -47,7 +47,7 @@ export default function Home() {
   const [watchlist, setWatchlist] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'scanner' | 'watchlist' | 'positions' | 'history'>('scanner');
   const [mainTab, setMainTab] = useState<'dashboard' | 'gann9' | 'gannAngle' | 'ema5' | 'shoonya'>('dashboard');
-  const [shoonyaConfig, setShoonyaConfig] = useState<any>({ uid: '', pwd: '', factor2: '', vc: '', appkey: '', webPwd: '', expiryMonth: 'APR', initialFunds: 100000, gann9MaxTrades: 5, gannAngleMaxTrades: 5, ema5MaxTrades: 5, gann9MaxLoss: -10000, gannAngleMaxLoss: -10000, ema5MaxLoss: -10000, gann9MaxProfit: 10000, gannAngleMaxProfit: 10000, ema5MaxProfit: 10000, gann9Enabled: true, gannAngleEnabled: false, ema5Enabled: false });
+  const [shoonyaConfig, setShoonyaConfig] = useState<any>({ uid: '', pwd: '', factor2: '', vc: '', appkey: '', secretCode: '', webPwd: '', expiryMonth: 'APR', initialFunds: 100000, gann9MaxTrades: 5, gannAngleMaxTrades: 5, ema5MaxTrades: 5, gann9MaxLoss: -10000, gannAngleMaxLoss: -10000, ema5MaxLoss: -10000, gann9MaxProfit: 10000, gannAngleMaxProfit: 10000, ema5MaxProfit: 10000, gann9Enabled: true, gannAngleEnabled: false, ema5Enabled: false });
   const [shoonyaStatus, setShoonyaStatus] = useState<string | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [authCode, setAuthCode] = useState('');
@@ -1232,13 +1232,29 @@ export default function Home() {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-neutral-400 mb-1">App Key</label>
+                    <label className="block text-sm font-medium text-neutral-400 mb-1">App Key (API Key)</label>
                     <input
                       type="password"
                       className="w-full bg-neutral-950 border border-neutral-800 rounded-lg px-4 py-2.5 text-neutral-100 placeholder-neutral-700 outline-none focus:border-purple-500/50"
                       value={shoonyaConfig.appkey}
-                      placeholder="Raw APPKEY from portal"
+                      placeholder="API Key from Shoonya portal"
                       onChange={(e) => setShoonyaConfig({ ...shoonyaConfig, appkey: e.target.value })}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-neutral-400 mb-1">
+                      Secret Code
+                      <span className="ml-2 text-[10px] text-purple-400/70 font-normal uppercase tracking-wide">For Auto Connect</span>
+                      {shoonyaConfig.secretCodeSet && !shoonyaConfig.secretCode && (
+                        <span className="ml-2 text-[10px] text-emerald-500 font-normal">Saved</span>
+                      )}
+                    </label>
+                    <input
+                      type="password"
+                      className="w-full bg-neutral-950 border border-purple-500/20 rounded-lg px-4 py-2.5 text-neutral-100 placeholder-neutral-600 outline-none focus:border-purple-500/50"
+                      value={shoonyaConfig.secretCode || ''}
+                      placeholder={shoonyaConfig.secretCodeSet ? '••••••••  (saved — leave blank to keep)' : 'Secret Code from API Key Generation page'}
+                      onChange={(e) => setShoonyaConfig({ ...shoonyaConfig, secretCode: e.target.value })}
                     />
                   </div>
                   <div>
