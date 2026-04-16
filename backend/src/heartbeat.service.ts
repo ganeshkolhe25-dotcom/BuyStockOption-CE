@@ -62,8 +62,8 @@ export class HeartbeatService {
      * Starts the 5-minute countdown for sustainment checks.
      */
     async addToWatchlist(symbol: string, triggerPrice: number, type: 'CE' | 'PE', targetPrice: number, slPrice: number, strategyName: string = 'GANN_9') {
-        if (await this.paperTrading.isTradingHaltedForDay(strategyName)) return;
-
+        // NOTE: Do NOT check trade limits here — watchlist is observation only.
+        // The limit is enforced at order placement time in executeOptionTrade().
         const key = `WATCHLIST:${symbol}`;
         const existing = await this.cacheManager.get(key);
 
@@ -103,11 +103,9 @@ export class HeartbeatService {
      */
     @Cron(CronExpression.EVERY_30_SECONDS)
     async processHeartbeatWatchlist() {
-        if (await this.paperTrading.isTradingHaltedForDay()) {
-            await this.cacheManager.del('WATCHLIST_KEYS');
-            return;
-        }
-
+        // NOTE: Do NOT gate on trade limits here — we still want to sustain-check and
+        // show entries in the watchlist UI even when the daily limit is reached.
+        // The limit is enforced inside executeOptionTrade() at actual order placement.
         try {
             // Memory Cache Manager doesn't natively expose 'keys()' in recent versions easily
             // For the purpose of tracking the watchlist, we iterate through an index list or we can just fetch known keys.
@@ -289,7 +287,9 @@ export class HeartbeatService {
      */
     @Cron('5 */5 9-15 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async continuousDailyScanMonitor() {
-        if (await this.paperTrading.isTradingHaltedForDay('GANN_9')) return;
+        // NOTE: Scanning always runs regardless of trade limits — stocks should appear
+        // in the watchlist even if the daily trade limit is reached. The limit is only
+        // enforced at order placement in executeOptionTrade().
 
         // Respect the gann9Enabled toggle — if disabled mid-day, stop scanning immediately
         const config = await this.paperTrading.getStrategyConfig();

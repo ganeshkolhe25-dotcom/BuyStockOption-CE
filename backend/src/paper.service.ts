@@ -113,6 +113,12 @@ export class PaperTradingService implements OnModuleInit {
             return false;
         }
 
+        // Enforce per-day trade count limits at order placement (not at scan time)
+        if (await this.isTradingHaltedForDay(strategyName)) {
+            this.logger.warn(`TRADE REJECTED: Daily trade limit reached for ${strategyName || 'overall'}. Cannot buy ${symbol}.`);
+            return false;
+        }
+
         const requiredMargin = qty * price;
 
         const summary = await this.getPortfolioSummary();
