@@ -488,9 +488,9 @@ export class ShoonyaService implements OnModuleInit {
             'ASIANPAINT': 20,
             'HINDALCO': 5,
             'JSWSTEEL': 10,
-            'TMPV': 10,
-            'TMCV': 10,
-            'GMRAIRPORT': 25,
+            'TMPV': 5,        // strike step — lot size fetched live from Shoonya match.ls
+            'TMCV': 5,        // strike step — lot size fetched live from Shoonya match.ls
+            'GMRAIRPORT': 5,  // strike step — lot size fetched live from Shoonya match.ls
             'SUNPHARMA': 10,
             'CIPLA': 10,
             'BHARTIARTL': 10,
