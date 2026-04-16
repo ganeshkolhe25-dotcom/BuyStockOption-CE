@@ -676,13 +676,9 @@ export class ShoonyaService implements OnModuleInit {
 
             if (isSessionErr && retry && !this.sessionClearInProgress) {
                 this.sessionClearInProgress = true;
-                this.logger.warn(`Session expired on TPSeries (JSON). Clearing token and re-authenticating...`);
+                this.logger.warn(`Session expired on TPSeries (JSON). Reloading token from DB...`);
                 this.sessionToken = null;
-                try {
-                    const cfg = await this.prisma.shoonyaConfig.findFirst();
-                    if (cfg) await this.prisma.shoonyaConfig.update({ where: { id: cfg.id }, data: { sessionToken: '' } });
-                } catch { }
-                const reauthed = await this.authenticate();
+                const reauthed = await this.authenticate(); // Loads from DB or QuickAuth
                 this.sessionClearInProgress = false;
                 if (reauthed) return this.getTimePriceSeries(exchange, token, interval, daysLimit, false);
                 return [];
@@ -701,13 +697,9 @@ export class ShoonyaService implements OnModuleInit {
 
             if (isSessionExpired && retry && !this.sessionClearInProgress) {
                 this.sessionClearInProgress = true;
-                this.logger.warn(`Session expired (401) on TPSeries. Clearing token and re-authenticating...`);
+                this.logger.warn(`Session expired (401) on TPSeries. Reloading token from DB...`);
                 this.sessionToken = null;
-                try {
-                    const cfg = await this.prisma.shoonyaConfig.findFirst();
-                    if (cfg) await this.prisma.shoonyaConfig.update({ where: { id: cfg.id }, data: { sessionToken: '' } });
-                } catch { }
-                const reauthed = await this.authenticate();
+                const reauthed = await this.authenticate(); // Loads from DB or QuickAuth
                 this.sessionClearInProgress = false;
                 if (reauthed) return this.getTimePriceSeries(exchange, token, interval, daysLimit, false);
                 return [];
@@ -751,19 +743,24 @@ export class ShoonyaService implements OnModuleInit {
                 error.response?.status === 401 ||
                 (responseData?.emsg && responseData.emsg.toLowerCase().includes('session'));
 
-            // Session expired — clear once (lock prevents stampede from parallel batch calls),
-            // wipe the stale DB token so authenticate() won't reload it, then retry
+            // Session expired — use OAuth auto-connect (not QuickAuth which may be broken).
+            // Lock prevents stampede from parallel batch calls.
+            // Critically: never wipe the DB token; if re-auth also fails, preserve whatever
+            // session we had so other callers can still use it.
             if (isSessionExpired && retry && !this.sessionClearInProgress) {
                 this.sessionClearInProgress = true;
-                this.logger.warn(`Session expired (401) on SearchScrip. Clearing token and re-authenticating...`);
-                this.sessionToken = null;
-                try {
-                    const cfg = await this.prisma.shoonyaConfig.findFirst();
-                    if (cfg) await this.prisma.shoonyaConfig.update({ where: { id: cfg.id }, data: { sessionToken: '' } });
-                } catch { }
-                const reauthed = await this.authenticate();
+                this.logger.warn(`Session expired (401) on SearchScrip [${symbol}]. Attempting OAuth auto-connect...`);
+                const savedToken = this.sessionToken;
+                this.sessionToken = null; // force autoConnect to fetch fresh
+                const result = await this.autoConnect();
                 this.sessionClearInProgress = false;
-                if (reauthed) return this.searchSecurityToken(symbol, exch, false);
+                if (result.success) {
+                    this.logger.log(`Re-auth via autoConnect succeeded. Retrying SearchScrip for ${symbol}...`);
+                    return this.searchSecurityToken(symbol, exch, false);
+                }
+                // autoConnect also failed — restore the old token so other APIs aren't broken
+                this.logger.error(`autoConnect re-auth failed: ${result.message}. Restoring previous token.`);
+                this.sessionToken = savedToken;
                 return null;
             }
 
