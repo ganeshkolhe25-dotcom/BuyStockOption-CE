@@ -400,4 +400,16 @@ export class NseService implements OnModuleInit {
         this.shoonya.subscribeTokens('NSE', tokens);
         this.logger.log(`[WS] Subscribed live feed for ${tokens.length}/${symbols.length} resolved symbols.`);
     }
+
+    /** Debug endpoint: raw GetQuotes response for a symbol */
+    async debugGetQuote(symbol: string): Promise<any> {
+        const token = this.tokenMap.get(symbol);
+        const results = token ? await this.shoonya.getMultiQuotes('NSE', [token]) : [];
+        return {
+            symbol,
+            tokenMapSize: this.tokenMap.size,
+            token: token || null,
+            quoteResult: results[0] || null,
+        };
+    }
 }

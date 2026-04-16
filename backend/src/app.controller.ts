@@ -35,6 +35,12 @@ export class AppController {
     return await this.scannerService.getLatestScanResults();
   }
 
+  @Post('force-scan')
+  async forceMorningScan() {
+    await this.scannerService.automatedMorningScan();
+    return await this.scannerService.getLatestScanResults();
+  }
+
   @Get('history')
   async getTradeHistory() {
     return await this.prisma.tradeHistory.findMany({
@@ -236,6 +242,11 @@ export class AppController {
   @Get('debug-scrip/:symbol/:strike')
   async debugScrip(@Param('symbol') symbol: string, @Param('strike') strike: string) {
       return this.shoonyaService.debugSearchScrip(symbol, strike);
+  }
+
+  @Get('debug-quote/:symbol')
+  async debugQuote(@Param('symbol') symbol: string) {
+      return this.nseService.debugGetQuote(symbol);
   }
 
   @Get('get-ip')
