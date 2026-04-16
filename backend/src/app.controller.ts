@@ -37,8 +37,11 @@ export class AppController {
 
   @Post('force-scan')
   async forceMorningScan() {
-    await this.scannerService.automatedMorningScan();
-    return await this.scannerService.getLatestScanResults();
+    // Fire-and-forget — scan runs in background, returns immediately
+    this.scannerService.automatedMorningScan().catch(err =>
+      console.error('[force-scan] Background scan error:', err)
+    );
+    return { status: 'started', message: 'Gann-9 scan running in background. Check back in ~2 minutes.' };
   }
 
   @Get('history')

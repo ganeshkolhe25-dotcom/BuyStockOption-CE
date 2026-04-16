@@ -63,6 +63,8 @@ export default function Home() {
   const [isFirstLoad, setIsFirstLoad] = useState(true);
   const [error, setError] = useState("");
   const [squaringOff, setSquaringOff] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
 
   const handleSquareOff = async (token: string) => {
     try {
@@ -75,6 +77,32 @@ export default function Home() {
       alert("Failed to square off position manually.");
     } finally {
       setSquaringOff(null);
+    }
+  };
+
+  const handleForceScan = async () => {
+    try {
+      setScanning(true);
+      setScanMessage('Gann-9 scan started in background...');
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+      await axios.post(`${API_URL}/force-scan`);
+      setScanMessage('Scan running... refreshing results in ~30s');
+      // Poll every 10s for up to 3 minutes
+      let attempts = 0;
+      const poll = async () => {
+        attempts++;
+        await fetchScan();
+        if (attempts < 18) {
+          setTimeout(poll, 10000);
+        } else {
+          setScanning(false);
+          setScanMessage(null);
+        }
+      };
+      setTimeout(poll, 10000);
+    } catch (err: any) {
+      setScanMessage(`Failed to start scan: ${err.message}`);
+      setScanning(false);
     }
   };
 
@@ -603,9 +631,47 @@ export default function Home() {
         {
           activeTab === 'scanner' && (
             <>
+              {/* Re-run scan button — always visible in Scanner Engine tab */}
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-neutral-500">
+                  {data.length > 0 ? `${data.length} stock${data.length !== 1 ? 's' : ''} matching Gann-9 rules` : 'No matches yet'}
+                </span>
+                <button
+                  onClick={handleForceScan}
+                  disabled={scanning}
+                  className={`flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-xl border transition-all ${
+                    scanning
+                      ? 'border-indigo-500/30 bg-indigo-500/10 text-indigo-400 cursor-not-allowed'
+                      : 'border-indigo-500/40 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 hover:border-indigo-500/60'
+                  }`}
+                >
+                  {scanning ? (
+                    <>
+                      <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z" />
+                      </svg>
+                      Scanning...
+                    </>
+                  ) : (
+                    <>
+                      <Activity className="w-4 h-4" />
+                      Re-run Gann-9 Scan
+                    </>
+                  )}
+                </button>
+              </div>
+
+              {scanMessage && (
+                <div className="mb-4 px-4 py-2 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-indigo-400 text-sm">
+                  {scanMessage}
+                </div>
+              )}
+
               {data.length === 0 && !error && !isFirstLoad && (
                 <div className="text-center py-20 border border-dashed border-neutral-800 rounded-2xl">
                   <p className="text-neutral-500">No Nifty 200 setup found right now matching rules (5k-30k Price & ADX  &gt; 25).</p>
+                  <p className="text-neutral-600 text-xs mt-2">Use "Re-run Gann-9 Scan" above to trigger a fresh scan.</p>
                 </div>
               )}
 
