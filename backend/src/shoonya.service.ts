@@ -178,6 +178,7 @@ export class ShoonyaService implements OnModuleInit {
                         }
 
                         this.logger.log('✅ Session token obtained and persisted to DB.');
+                        if (this.onSessionRefreshed) this.onSessionRefreshed();
                         return { success: true, message: 'Shoonya connected successfully.' };
                     }
 
@@ -246,6 +247,9 @@ export class ShoonyaService implements OnModuleInit {
                     await this.prisma.shoonyaConfig.update({ where: { id: dbConfig.id }, data: { sessionToken: token } });
                 }
                 this.logger.log('✅ Session token obtained and persisted via auto-connect.');
+                // Notify registered hooks (e.g. NseService.refreshSecurityTokens) so the
+                // token map is populated immediately — without waiting for the 9:10 AM cron.
+                if (this.onSessionRefreshed) this.onSessionRefreshed();
                 return { success: true, message: 'Shoonya connected successfully via auto-connect.' };
             }
 
