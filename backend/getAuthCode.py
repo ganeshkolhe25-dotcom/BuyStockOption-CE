@@ -1,6 +1,11 @@
 """
 Shoonya Auto-Connect Script
-Runs headless Chrome, logs into Shoonya, captures auth code, exchanges for session token.
+Runs headless Chrome, logs into Shoonya, captures session token.
+
+Strategy (in priority order):
+  1. Capture susertoken from browser network responses (GenAcsTok / QuickAuth calls the web app makes)
+  2. Capture susertoken from browser localStorage after redirect
+  3. Capture auth code from redirect URL → exchange via GenAcsTok
 
 Output contract (one of these on stdout):
   SESSION_TOKEN:<token>        -> success
@@ -32,6 +37,61 @@ TOKEN_URL = "https://api.shoonya.com/NorenWClientAPI/GenAcsTok"
 def sha256(s):
     return hashlib.sha256(s.encode()).hexdigest()
 
+def scan_network_for_susertoken(driver):
+    """Scan ALL network traffic for any susertoken value (highest priority)."""
+    try:
+        logs = driver.get_log("performance")
+        for entry in logs:
+            try:
+                msg = json.loads(entry["message"])["message"]
+
+                # --- Check response bodies (GenAcsTok / QuickAuth / any auth endpoint) ---
+                if msg.get("method") == "Network.responseReceived":
+                    response_url = msg.get("params", {}).get("response", {}).get("url", "")
+                    content_type = msg.get("params", {}).get("response", {}).get("mimeType", "")
+                    request_id = msg.get("params", {}).get("requestId", "")
+
+                    if request_id and (
+                        "susertoken" in response_url.lower() or
+                        "GenAcsTok" in response_url or
+                        "QuickAuth" in response_url or
+                        "NorenWClient" in response_url
+                    ):
+                        try:
+                            resp = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": request_id})
+                            body = resp.get("body", "")
+                            if body:
+                                try:
+                                    data = json.loads(body)
+                                    token = data.get("susertoken")
+                                    if token and len(token) > 10:
+                                        print(f"[DEBUG] Found susertoken in response from {response_url[:80]}", flush=True)
+                                        return token
+                                except json.JSONDecodeError:
+                                    # Some responses may not be JSON
+                                    pass
+                        except Exception:
+                            pass
+
+                # --- Check POST request bodies containing jKey ---
+                if msg.get("method") == "Network.requestWillBeSent":
+                    post_data = msg.get("params", {}).get("request", {}).get("postData", "")
+                    if post_data and "jKey=" in post_data:
+                        for part in post_data.split("&"):
+                            if part.startswith("jKey="):
+                                token = part[5:].strip()
+                                if token and len(token) > 20:
+                                    req_url = msg.get("params", {}).get("request", {}).get("url", "")
+                                    print(f"[DEBUG] Found jKey in POST to {req_url[:80]}", flush=True)
+                                    return token
+
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
 def scan_network_for_code(driver):
     """Capture OAuth auth code from browser network logs."""
     try:
@@ -52,15 +112,43 @@ def scan_network_for_code(driver):
         pass
     return None
 
+
+def get_token_from_localstorage(driver):
+    """Try to extract susertoken from browser localStorage after login."""
+    try:
+        keys_to_try = ["susertoken", "jKey", "sessionToken", "access_token", "token", "stoken"]
+        for key in keys_to_try:
+            token = driver.execute_script(f"return localStorage.getItem('{key}');")
+            if token and len(str(token)) > 20:
+                print(f"[DEBUG] Found token in localStorage['{key}']", flush=True)
+                return str(token)
+
+        # Try sessionStorage too
+        for key in keys_to_try:
+            token = driver.execute_script(f"return sessionStorage.getItem('{key}');")
+            if token and len(str(token)) > 20:
+                print(f"[DEBUG] Found token in sessionStorage['{key}']", flush=True)
+                return str(token)
+
+        # Dump all localStorage keys for debugging
+        all_keys = driver.execute_script("return Object.keys(localStorage);")
+        if all_keys:
+            print(f"[DEBUG] localStorage keys: {all_keys}", flush=True)
+            for k in all_keys:
+                v = driver.execute_script(f"return localStorage.getItem('{k}');")
+                if v and len(str(v)) > 20 and len(str(v)) < 200:
+                    print(f"[DEBUG]   localStorage['{k}'] = {str(v)[:60]}...", flush=True)
+
+    except Exception as e:
+        print(f"[DEBUG] localStorage check error: {e}", flush=True)
+    return None
+
+
 def exchange_auth_code(auth_code):
-    """Exchange OAuth auth code for session token using official checksum formula.
-    Official formula (NorenRestApiOAuth SDK): SHA256(client_id + Secret_Code + auth_code)
-    """
+    """Exchange OAuth auth code for session token using official checksum formula."""
     CLIENT_ID = f"{UID}_U"
     checksum_variants = [
-        # ✅ Official formula: SHA256(client_id + Secret_Code + auth_code)
         (sha256(f"{CLIENT_ID}{SECRET_CODE}{auth_code}"), "clientId+secret+code [OFFICIAL]"),
-        # Fallback variants
         (sha256(f"{SECRET_CODE}{auth_code}"),        "secret_code+code"),
         (sha256(f"{SECRET_CODE}|{auth_code}"),       "secret_code|code"),
         (sha256(f"{APPKEY}{auth_code}"),             "appkey+code"),
@@ -75,7 +163,6 @@ def exchange_auth_code(auth_code):
                               timeout=15)
             print(f"[DEBUG] GenAcsTok [{label}] => HTTP {r.status_code} | {r.text[:300]}", flush=True)
             d = r.json()
-            # OAuth SDK returns access_token + susertoken; QuickAuth returns stat:Ok + susertoken
             token = d.get("susertoken")
             if token:
                 return token, None
@@ -110,6 +197,7 @@ for p in ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chr
         break
 
 auth_code = None
+direct_token = None  # susertoken captured directly from network/localStorage
 
 try:
     driver = webdriver.Chrome(options=options)
@@ -133,14 +221,27 @@ try:
     print(f"[DEBUG] Filled UID={UID}, PWD=***, OTP={otp}", flush=True)
 
     wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='LOGIN']"))).click()
-    print("[DEBUG] Login button clicked, scanning for auth code...", flush=True)
+    print("[DEBUG] Login button clicked, scanning for token/code...", flush=True)
 
     start = time.time()
     while True:
+        # Priority 1: direct susertoken from network traffic
+        direct_token = scan_network_for_susertoken(driver)
+        if direct_token:
+            print(f"[DEBUG] Direct susertoken captured from network!", flush=True)
+            break
+
+        # Priority 2: auth code for later exchange
         auth_code = scan_network_for_code(driver)
         if auth_code:
             print(f"[DEBUG] Auth code captured: {auth_code[:20]}...", flush=True)
+            # Keep scanning a bit more to see if a direct token also appears
+            time.sleep(3)
+            direct_token = scan_network_for_susertoken(driver)
+            if direct_token:
+                print(f"[DEBUG] Found direct token after auth code!", flush=True)
             break
+
         if time.time() - start > 60:
             new_otp = pyotp.TOTP(TOTP_KEY).now()
             if new_otp != otp:
@@ -149,11 +250,15 @@ try:
                 start = time.time()
                 otp = new_otp
                 continue
-            print("[DEBUG] Timeout: could not capture auth code.", flush=True)
+            print("[DEBUG] Timeout: could not capture token or auth code.", flush=True)
             break
         time.sleep(0.5)
 
     print(f"[DEBUG] Current URL: {driver.current_url[:120]}", flush=True)
+
+    # Try localStorage as final fallback before quitting browser
+    if not direct_token:
+        direct_token = get_token_from_localstorage(driver)
 
 except (InvalidSessionIdException, WebDriverException) as e:
     print(f"ERROR:Browser error: {e}", flush=True)
@@ -167,11 +272,17 @@ finally:
     except Exception:
         pass
 
-# ── Exchange auth code for session token ───────────────────────────────────────
+# ── Use best available credential ─────────────────────────────────────────────
+if direct_token:
+    # Best case: got the actual trading session token from the browser
+    print(f"SESSION_TOKEN:{direct_token}", flush=True)
+    sys.exit(0)
+
 if not auth_code:
-    print("ERROR:Could not capture auth code. Check UID, Web Password, and TOTP Secret.", flush=True)
+    print("ERROR:Could not capture auth code or session token. Check UID, Web Password, and TOTP Secret.", flush=True)
     sys.exit(1)
 
+# Fallback: exchange auth code for session token via GenAcsTok
 token, err = exchange_auth_code(auth_code)
 if token:
     print(f"SESSION_TOKEN:{token}", flush=True)

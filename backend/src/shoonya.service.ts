@@ -33,6 +33,9 @@ export class ShoonyaService implements OnModuleInit {
     public lastAuthError: string | null = null;
     // Prevents multiple concurrent 401 handlers from each triggering a re-auth
     private sessionClearInProgress = false;
+    // Timestamp of the last auto-connect attempt — prevents cascading 401 → autoConnect loops.
+    // 401 handlers skip autoConnect if one ran within the last 3 minutes.
+    private lastAutoConnectMs = 0;
     // Callback registered by NseService to trigger token refresh after daily re-auth
     private onSessionRefreshed: (() => Promise<void>) | null = null;
 
@@ -204,6 +207,7 @@ export class ShoonyaService implements OnModuleInit {
      * headless Chromium, captures the auth code, and exchanges it automatically.
      */
     async autoConnect(): Promise<{ success: boolean; message: string }> {
+        this.lastAutoConnectMs = Date.now(); // record attempt time for cooldown
         this.logger.log('Auto-connect: launching headless Chrome to get Shoonya session token...');
         try {
             const dbConfig = await this.prisma.shoonyaConfig.findFirst();
@@ -748,11 +752,14 @@ export class ShoonyaService implements OnModuleInit {
                 (responseData?.emsg && responseData.emsg.toLowerCase().includes('session'));
 
             // Session expired — use OAuth auto-connect (not QuickAuth which may be broken).
-            // Lock prevents stampede from parallel batch calls.
-            // Critically: never wipe the DB token; if re-auth also fails, preserve whatever
-            // session we had so other callers can still use it.
-            if (isSessionExpired && retry && !this.sessionClearInProgress) {
+            // Rate-limited: only one autoConnect attempt per 3 minutes to prevent cascading loops
+            // when the whole token batch fails simultaneously.
+            const nowMs = Date.now();
+            const autoConnectCooldownMs = 3 * 60 * 1000; // 3 minutes
+            if (isSessionExpired && retry && !this.sessionClearInProgress &&
+                nowMs - this.lastAutoConnectMs > autoConnectCooldownMs) {
                 this.sessionClearInProgress = true;
+                this.lastAutoConnectMs = nowMs;
                 this.logger.warn(`Session expired (401) on SearchScrip [${symbol}]. Attempting OAuth auto-connect...`);
                 const savedToken = this.sessionToken;
                 this.sessionToken = null; // force autoConnect to fetch fresh
@@ -768,8 +775,8 @@ export class ShoonyaService implements OnModuleInit {
                 return null;
             }
 
-            // Another concurrent call is already handling the re-auth — just skip this symbol
-            if (isSessionExpired && retry && this.sessionClearInProgress) return null;
+            // Cooldown active or another concurrent call is handling re-auth — skip this symbol
+            if (isSessionExpired && retry) return null;
 
             const body = JSON.stringify(responseData || error.response?.status || error.message);
             this.logger.error(`Symbol Resolution Error [${symbol}]: ${error.message} | Body: ${body}`);
