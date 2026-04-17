@@ -94,7 +94,7 @@ export class PaperTradingService implements OnModuleInit {
                 type: type as "CE" | "PE",
                 quantity: 0,
                 entryPrice: triggerPrice,
-                status: 'CLOSED',
+                status: 'REJECTED',   // REJECTED is excluded from isTradingHaltedForDay count
                 isPaperTrade: true,
                 exitReason: reason,
                 exitTime: new Date(),

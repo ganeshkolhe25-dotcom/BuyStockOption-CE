@@ -18,7 +18,7 @@ const NIFTY_100 = [
   "RECLTD", "CONCOR", "IDFCFIRSTB", "BALKRISIND", "PEL"
 ];
 
-export default function GannAngle({ isEnabled, portfolio, history, handleSquareOff, squaringOff }: { isEnabled?: boolean, portfolio?: any, history?: any[], handleSquareOff?: (token: string) => void, squaringOff?: string | null }) {
+export default function GannAngle({ isEnabled, portfolio, history, handleSquareOff, squaringOff, watchlist }: { isEnabled?: boolean, portfolio?: any, history?: any[], handleSquareOff?: (token: string) => void, squaringOff?: string | null, watchlist?: any[] }) {
   const [symbol, setSymbol] = useState("");
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<any>(null);
@@ -207,6 +207,42 @@ export default function GannAngle({ isEnabled, portfolio, history, handleSquareO
           </div>
         </div>
       )}
+
+      {/* Pending Signals — Gann Angle entries awaiting immediate execution */}
+      {activeInnerTab === 'analysis' && (() => {
+        const pending = (watchlist || []).filter((w: any) => w.strategyName === 'GANN_ANGLE');
+        if (pending.length === 0) return null;
+        return (
+          <div className="bg-neutral-900 border border-amber-500/20 rounded-2xl p-6">
+            <h3 className="text-sm font-semibold text-amber-400 uppercase tracking-wider mb-4 flex items-center gap-2">
+              <Clock className="w-4 h-4" /> Pending Gann Angle Signals
+              <span className="ml-auto px-2 py-0.5 text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded">{pending.length} Queued</span>
+            </h3>
+            <div className="space-y-2">
+              {pending.map((item: any) => {
+                const elapsed = Date.now() - item.breakoutTime;
+                const isReady = elapsed >= 0;
+                return (
+                  <div key={item.symbol} className="flex items-center justify-between px-4 py-3 rounded-xl bg-neutral-950 border border-neutral-800">
+                    <div className="flex items-center gap-3">
+                      <span className="font-bold text-white">{item.symbol}</span>
+                      <span className={`px-2 py-0.5 rounded text-xs font-bold border ${item.type === 'CE' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>
+                        {item.type}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-6 text-xs font-mono text-neutral-400">
+                      <span>Trigger: <span className="text-white">₹{item.triggerPrice?.toFixed(2)}</span></span>
+                      <span>T: <span className="text-emerald-400">₹{item.targetPrice?.toFixed(2)}</span></span>
+                      <span>SL: <span className="text-rose-400">₹{item.slPrice?.toFixed(2)}</span></span>
+                      {isReady && <span className="text-indigo-400 font-bold animate-pulse uppercase tracking-wider">Executing...</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Active Trades — always visible under NIFTY 100 Analysis Scanner */}
       {activeInnerTab === 'analysis' && (

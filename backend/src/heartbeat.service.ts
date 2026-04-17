@@ -119,20 +119,21 @@ export class HeartbeatService {
             this.lastHeartbeatTime = new Date().toISOString();
             this.logger.debug(`[Heartbeat Worker] Validating ${keys.length} Active Breakout(s)...`);
 
-            let updatedKeys = [...keys];
-
+            // Parse all entries first, then fetch all LTPs in a single batch call
+            // (avoids N individual REST calls that hit Shoonya rate limits / 504s)
+            const entries: { key: string; entry: WatchlistEntry }[] = [];
             for (const key of keys) {
                 const raw = await this.cacheManager.get<string>(key);
-                if (!raw) {
-                    updatedKeys = updatedKeys.filter(k => k !== key);
-                    continue;
-                }
+                if (raw) entries.push({ key, entry: JSON.parse(raw) });
+            }
 
-                const entry: WatchlistEntry = JSON.parse(raw);
+            const symbols = entries.map(e => e.entry.symbol);
+            const ltpMap = symbols.length > 0 ? await this.nseService.getBatchLTP(symbols) : {};
 
-                // Query NseService for the live tick price of this specific stock
-                // (Currently mocked to hit the Python script or Yahoo. In prod, this is WebSocket)
-                const ltp = await this.nseService.getLiveLTP(entry.symbol);
+            let updatedKeys = [...keys];
+
+            for (const { key, entry } of entries) {
+                const ltp = ltpMap[entry.symbol];
                 if (!ltp) {
                     this.logger.warn(`Could not fetch Live LTP for ${entry.symbol}. Skipping this cycle.`);
                     continue;
@@ -410,7 +411,7 @@ export class HeartbeatService {
     @Cron('*/15 * * * * *')
     async enforceDynamicExits() {
         if (!this.isMarketHours()) return;
-        if (await this.paperTrading.isTradingHaltedForDay()) return;
+        // NOTE: Never gate dynamic exits on trade limits — closing open positions must always run.
 
         const summary = await this.paperTrading.getPortfolioSummary();
         const positions = summary.positions;

@@ -506,7 +506,7 @@ export default function Home() {
         {mainTab === 'dashboard' && <DashboardTab portfolio={portfolio} history={history} shoonyaConfig={shoonyaConfig} handleToggleStrategy={handleToggleStrategy} handleSquareOff={handleSquareOff} squaringOff={squaringOff} />}
 
         {/* Gann Angle Strategy View */}
-        {mainTab === 'gannAngle' && <GannAngle isEnabled={shoonyaConfig.gannAngleEnabled} portfolio={portfolio} history={history} handleSquareOff={handleSquareOff} squaringOff={squaringOff} />}
+        {mainTab === 'gannAngle' && <GannAngle isEnabled={shoonyaConfig.gannAngleEnabled} portfolio={portfolio} history={history} handleSquareOff={handleSquareOff} squaringOff={squaringOff} watchlist={watchlist} />}
 
         {/* 5 EMA Strategy View */}
         {mainTab === 'ema5' && <Ema5Strategy isEnabled={shoonyaConfig.ema5Enabled} portfolio={portfolio} history={history} />}
@@ -818,7 +818,7 @@ export default function Home() {
                       </tr>
                     ) : (
                       watchlist?.map((item: any) => {
-                        const sustainMs = item.strategyName === 'EMA_5' ? 60 * 1000 : 5 * 60 * 1000;
+                        const sustainMs = item.strategyName === 'GANN_ANGLE' ? 0 : item.strategyName === 'EMA_5' ? 60 * 1000 : 5 * 60 * 1000;
                         const sustainMins = sustainMs / 60000;
                         const elapsed = Date.now() - item.breakoutTime;
                         const minsLeft = Math.max(0, sustainMins - (elapsed / 60000)).toFixed(1);
@@ -827,7 +827,10 @@ export default function Home() {
                         return (
                           <tr key={item.symbol} className="hover:bg-neutral-800/20 transition-colors">
                             <td className="px-6 py-4 font-bold text-neutral-200">
-                              {item.symbol}
+                              <div className="flex flex-col gap-1">
+                                {item.symbol}
+                                <span className="text-[10px] font-mono text-neutral-500 uppercase">{item.strategyName || 'GANN_9'}</span>
+                              </div>
                             </td>
                             <td className="px-6 py-4">
                               <span className={`px-2 py-0.5 rounded text-xs font-bold border ${item.type === 'CE' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-rose-500/10 text-rose-400 border-rose-500/20'}`}>
