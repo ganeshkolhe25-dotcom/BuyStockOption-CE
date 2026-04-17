@@ -504,7 +504,12 @@ export class ShoonyaService implements OnModuleInit {
             'POWERGRID': 5,
             'ESCORTS': 50,
             'CUMMINSIND': 50,
-            'PERSISTENT': 100
+            'PERSISTENT': 100,
+            'COROMANDEL': 50,
+            'COLPAL': 10,
+            'GODREJCP': 10,
+            'BRITANNIA': 50,
+            'HDFCLIFE': 10
         };
 
         let step = NSE_STOCK_STEPS[symbol];
@@ -544,7 +549,8 @@ export class ShoonyaService implements OnModuleInit {
 
                 const payload = `jData=${JSON.stringify(jData).replace(/&/g, '\\u0026')}&jKey=${this.sessionToken}`;
                 const response = await axios.post(`${this.endpoint}/SearchScrip`, payload, {
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    timeout: 8000
                 });
 
                 if (response.data.stat === 'Ok' && response.data.values?.length > 0) {
@@ -617,7 +623,8 @@ export class ShoonyaService implements OnModuleInit {
 
                 const payload = `jData=${JSON.stringify(jData)}&jKey=${this.sessionToken}`;
                 const response = await axios.post(`${this.endpoint}/GetQuotes`, payload, {
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    timeout: 8000
                 });
 
                 if (response.data.stat === 'Not_Ok' && response.data.emsg?.toLowerCase().includes('session')) {
@@ -672,7 +679,8 @@ export class ShoonyaService implements OnModuleInit {
 
             const payload = `jData=${JSON.stringify(jData)}&jKey=${this.sessionToken}`;
             const response = await axios.post(`${this.endpoint}/TPSeries`, payload, {
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                timeout: 8000
             });
 
             if (Array.isArray(response.data)) {
@@ -738,7 +746,8 @@ export class ShoonyaService implements OnModuleInit {
 
             const payload = `jData=${JSON.stringify(jData).replace(/&/g, '\\u0026')}&jKey=${this.sessionToken}`;
             const response = await axios.post(`${this.endpoint}/SearchScrip`, payload, {
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                timeout: 8000
             });
 
             if (response.data.stat === 'Ok' && response.data.values?.length > 0) {

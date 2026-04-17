@@ -129,6 +129,15 @@ export class NseService implements OnModuleInit {
             await new Promise(res => setTimeout(res, 300));
         }
         this.logger.log(`Resolved and Cached ${this.tokenMap.size} security tokens for NSE.`);
+
+        // Subscribe ALL resolved tokens to the Shoonya WS tick feed so that
+        // getBatchLTP / getLiveLTP can serve prices from the tick cache instead
+        // of falling back to REST (which triggers Shoonya TPS 504 rate limits).
+        const allTokens = Array.from(this.tokenMap.values());
+        if (allTokens.length > 0) {
+            this.shoonya.subscribeTokens('NSE', allTokens);
+            this.logger.log(`[WS] Subscribed ${allTokens.length} NSE tokens to Shoonya tick feed.`);
+        }
     }
 
     /**
@@ -144,7 +153,7 @@ export class NseService implements OnModuleInit {
 
         for (const item of results) {
             if (item.lp && item.tsym) {
-                const symbol = item.tsym.replace('-EQ', '');
+                const symbol = item.tsym.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym;
                 const ltp = parseFloat(item.lp);
                 const prevClose = parseFloat(item.c) || ltp;
                 const openPrice = parseFloat(item.o) || ltp;
@@ -184,7 +193,7 @@ export class NseService implements OnModuleInit {
 
                 // Core Filter: 2000 < LTP < 30000
                 if (ltp >= 2000 && ltp <= 30000) {
-                    const symbol = item.tsym.replace('-EQ', '');
+                    const symbol = item.tsym.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym;
                     candidateSymbols.push(symbol);
                     basicDataMap.set(symbol, { ltp, pChange, prevClose, openPrice });
                 }
@@ -206,6 +215,19 @@ export class NseService implements OnModuleInit {
                     prevClose: basic.prevClose,
                     openPrice: basic.openPrice,
                     ...indicators
+                });
+            } else if (!indicators && Math.abs(basic.pChange) > 2.0) {
+                // Fallback: TPSeries unavailable (Shoonya rate-limit) — use price change alone
+                this.logger.warn(`[Scan] TPSeries unavailable for ${sym} — using price-change fallback (${basic.pChange.toFixed(2)}%)`);
+                finalized.push({
+                    symbol: sym,
+                    ltp: basic.ltp,
+                    pChange: basic.pChange,
+                    prevClose: basic.prevClose,
+                    openPrice: basic.openPrice,
+                    adx: 0,
+                    rsi: 50,
+                    rdx: 0
                 });
             }
             // Throttle indicator fetching
@@ -399,7 +421,7 @@ export class NseService implements OnModuleInit {
             const results = await this.shoonya.getMultiQuotes('NSE', restTokens);
             for (const item of results) {
                 if (item.lp && item.tsym) {
-                    priceMap[item.tsym.replace('-EQ', '')] = parseFloat(item.lp);
+                    priceMap[item.tsym.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym] = parseFloat(item.lp);
                 }
             }
             this.logger.debug(`[WS] getBatchLTP: ${symbols.length - restSymbols.length} from tick cache, ${restSymbols.length} via REST.`);
