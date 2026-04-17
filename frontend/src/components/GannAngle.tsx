@@ -312,81 +312,115 @@ export default function GannAngle({ isEnabled, portfolio, history, handleSquareO
       )}
 
       {activeInnerTab === 'ledger' && (
-         <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 relative overflow-hidden">
-            <h2 className="text-xl font-bold text-white mb-4">Gann Angle Ledger</h2>
-            <p className="text-sm text-neutral-400 mb-6">Live and Historical Option executions generated strictly by the NIFTY 100 Gann Angle geometry module.</p>
-            
-            {(!history || history.filter(h => h.strategyName === 'GANN_ANGLE').length === 0) && (!portfolio?.positions || portfolio.positions.filter((p: any) => p.strategyName === 'GANN_ANGLE').length === 0) && !isEnabled ? (
-               <div className="text-center py-20 border border-dashed border-neutral-800 rounded-2xl text-neutral-500">
-                  Engine disabled. No trade history yet.
-               </div>
-            ) : (
-               <div className="overflow-x-auto">
-                 <table className="w-full text-sm text-left text-neutral-400">
-                   <thead className="text-xs uppercase bg-neutral-950/50 border-b border-neutral-800 text-neutral-500">
-                     <tr>
-                        <th className="px-6 py-4">Date/Time</th>
-                        <th className="px-6 py-4">Symbol</th>
-                        <th className="px-6 py-4">Structure</th>
-                        <th className="px-6 py-4">Type (CE/PE)</th>
-                        <th className="px-6 py-4">Entry</th>
-                        <th className="px-6 py-4">Exit</th>
-                        <th className="px-6 py-4 text-right">Net P&L</th>
-                     </tr>
-                   </thead>
-                   <tbody>
-                      {(!history || history.filter(h => h.strategyName === 'GANN_ANGLE').length === 0) && (!portfolio?.positions || portfolio.positions.filter((p: any) => p.strategyName === 'GANN_ANGLE').length === 0) ? (
-                      <tr className="border-b border-neutral-800/50 bg-neutral-900/20">
-                         <td className="px-6 py-4 text-neutral-600" colSpan={7} style={{textAlign: 'center'}}>No Gann Angle Option Trades have been executed yet...</td>
-                      </tr>
-                      ) : (
-                        <>
-                           {/* Active Positions Block */}
-                           {portfolio?.positions?.filter((p: any) => p.strategyName === 'GANN_ANGLE').map((pos: any, idx: number) => {
-                               const livePnl = (pos.currentLtp - pos.entryPrice) * pos.qty;
-                               return (
-                                 <tr key={`act-${idx}`} className="border-b border-indigo-500/20 bg-indigo-500/5 hover:bg-indigo-500/10 transition-colors">
-                                   <td className="px-6 py-4 whitespace-nowrap">
-                                      <span className="px-2 py-1 text-[10px] bg-blue-500/20 text-blue-400 rounded border border-blue-500/30">LIVESTREAM</span>
-                                   </td>
-                                   <td className="px-6 py-4 font-bold text-indigo-300">{pos.symbol} <span className="text-[10px] bg-neutral-800 px-1 py-0.5 rounded text-neutral-400 ml-2">{pos.tradingSymbol}</span></td>
-                                   <td className="px-6 py-4">GANN_ANGLE</td>
-                                   <td className="px-6 py-4 font-bold text-white">{pos.type}</td>
-                                   <td className="px-6 py-4 font-mono text-neutral-300">₹{pos.entryPrice} <span className="text-xs text-neutral-500">[{pos.qty} Qty]</span></td>
-                                   <td className="px-6 py-4 font-mono">
-                                       <span className="text-blue-400 animate-pulse">Live: ₹{pos.currentLtp}</span>
-                                   </td>
-                                   <td className={`px-6 py-4 font-bold text-right font-mono ${livePnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                      {livePnl >= 0 ? '+' : ''}₹{livePnl.toFixed(2)}
-                                   </td>
-                                 </tr>
-                               );
-                           })}
-
-                           {/* Historical Positions Block */}
-                           {history?.filter(h => h.strategyName === 'GANN_ANGLE').map((record: any, idx: number) => {
-                              const isWin = record.realizedPnl > 0;
-                              return (
-                                 <tr key={`hist-${idx}`} className="border-b border-neutral-800/50 hover:bg-neutral-800/30 transition-colors">
-                                   <td className="px-6 py-4 whitespace-nowrap">{new Date(record.entryTime).toLocaleString()}</td>
-                                   <td className="px-6 py-4 text-white font-medium">{record.symbol}</td>
-                                   <td className="px-6 py-4">GANN_ANGLE</td>
-                                   <td className="px-6 py-4"><span className={`px-2 py-1 rounded text-[10px] font-bold ${record.type === 'CE' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>{record.type}</span></td>
-                                   <td className="px-6 py-4 font-mono">₹{record.entryPrice} <span className="text-xs text-neutral-600">[{record.quantity} Qty]</span></td>
-                                   <td className="px-6 py-4 font-mono text-neutral-400">₹{record.exitPrice || 'N/A'}</td>
-                                   <td className={`px-6 py-4 font-bold text-right font-mono ${isWin ? 'text-emerald-500' : 'text-rose-500'}`}>
-                                      {isWin ? '+' : ''}₹{record.realizedPnl?.toFixed(2) || '0.00'}
-                                   </td>
-                                 </tr>
-                              );
-                           })}
-                        </>
-                      )}
-                   </tbody>
-                 </table>
-               </div>
-            )}
-         </div>
+        <div className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden">
+          <div className="px-6 py-5 border-b border-neutral-800">
+            <h2 className="text-base font-bold text-white">Gann Angle Trade Ledger</h2>
+            <p className="text-xs text-neutral-500 mt-1">NIFTY 100 Gann Angle geometry entries only. Limit buy at mid-price, 2-min expiry window.</p>
+          </div>
+          {(!history || history.filter((h: any) => h.strategyName === 'GANN_ANGLE' && !(h.exitReason && h.exitReason.includes('Reconciled'))).length === 0) &&
+           (!portfolio?.positions || portfolio.positions.filter((p: any) => p.strategyName === 'GANN_ANGLE').length === 0) && !isEnabled ? (
+            <div className="text-center py-20 text-neutral-500">Engine disabled. No trade history yet.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm whitespace-nowrap">
+                <thead className="bg-neutral-950/50 border-b border-neutral-800 text-neutral-400 font-medium">
+                  <tr>
+                    <th className="px-6 py-4">Buy Time</th>
+                    <th className="px-6 py-4">Sell Time</th>
+                    <th className="px-6 py-4">Option Token</th>
+                    <th className="px-6 py-4">Action</th>
+                    <th className="px-6 py-4">Status</th>
+                    <th className="px-6 py-4">Entry / Exit</th>
+                    <th className="px-6 py-4">Max Profit / Max DD</th>
+                    <th className="px-6 py-4">Note / Reason</th>
+                    <th className="px-6 py-4 text-right">Realized P&L</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-neutral-800/50">
+                  {(!history || history.filter((h: any) => h.strategyName === 'GANN_ANGLE' && !(h.exitReason && h.exitReason.includes('Reconciled'))).length === 0) &&
+                   (!portfolio?.positions || portfolio.positions.filter((p: any) => p.strategyName === 'GANN_ANGLE').length === 0) ? (
+                    <tr>
+                      <td colSpan={9} className="px-6 py-12 text-center text-neutral-500">No Gann Angle trades executed yet.</td>
+                    </tr>
+                  ) : (
+                    <>
+                      {/* Open positions */}
+                      {portfolio?.positions?.filter((p: any) => p.strategyName === 'GANN_ANGLE').map((pos: any, idx: number) => {
+                        const livePnl = (pos.currentLtp - pos.entryPrice) * pos.qty;
+                        const entryStr = pos.entryTime ? new Date(pos.entryTime).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '--';
+                        return (
+                          <tr key={`open-${idx}`} className="bg-indigo-500/5 hover:bg-indigo-500/10 transition-colors">
+                            <td className="px-6 py-4 text-xs text-neutral-400 font-mono">{entryStr}</td>
+                            <td className="px-6 py-4 text-xs text-neutral-500 font-mono">--</td>
+                            <td className="px-6 py-4">
+                              <div className="font-bold text-indigo-300">{pos.symbol}</div>
+                              <div className="text-xs text-neutral-500 font-mono mt-0.5">{pos.tradingSymbol || pos.token}</div>
+                            </td>
+                            <td className="px-6 py-4">
+                              <span className={`px-2 py-0.5 rounded text-xs font-bold ${pos.type === 'CE' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>BUY {pos.type}</span>
+                              <span className="ml-2 text-xs font-mono text-neutral-500">x{pos.qty}</span>
+                            </td>
+                            <td className="px-6 py-4"><span className="px-2 py-0.5 rounded text-xs bg-indigo-500/20 text-indigo-400 animate-pulse">OPEN</span></td>
+                            <td className="px-6 py-4 font-mono text-xs text-neutral-400">
+                              <div>In: <span className="text-neutral-200">₹{pos.entryPrice}</span></div>
+                              <div>LTP: <span className="text-indigo-300 font-bold animate-pulse">₹{pos.currentLtp}</span></div>
+                            </td>
+                            <td className="px-6 py-4 font-mono text-xs">
+                              <div className="text-emerald-400">H: ₹{(pos.maxProfit || 0).toFixed(2)}</div>
+                              <div className="text-rose-400 mt-0.5">L: ₹{(pos.maxLoss || 0).toFixed(2)}</div>
+                            </td>
+                            <td className="px-6 py-4 text-xs text-neutral-500">Active in Market</td>
+                            <td className={`px-6 py-4 text-right font-mono font-bold ${livePnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {livePnl >= 0 ? '+' : ''}₹{livePnl.toFixed(2)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {/* Closed history — exclude Reconciled (0-PnL orphan closures from container restarts) */}
+                      {history?.filter((h: any) => h.strategyName === 'GANN_ANGLE' && !(h.exitReason && h.exitReason.includes('Reconciled'))).map((record: any, idx: number) => {
+                        const entryStr = new Date(record.entryTime).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                        const exitStr = record.exitTime ? new Date(record.exitTime).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '--';
+                        return (
+                          <tr key={`hist-${idx}`} className="hover:bg-neutral-800/20 transition-colors">
+                            <td className="px-6 py-4 text-xs text-neutral-400 font-mono">{entryStr}</td>
+                            <td className="px-6 py-4 text-xs text-neutral-500 font-mono">{exitStr}</td>
+                            <td className="px-6 py-4">
+                              <div className="font-bold text-neutral-200">{record.symbol}</div>
+                              <div className="text-xs text-neutral-500 font-mono mt-0.5">{record.tradingSymbol || record.token}</div>
+                            </td>
+                            <td className="px-6 py-4">
+                              <span className={`px-2 py-0.5 rounded text-xs font-bold ${record.type === 'CE' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>BUY {record.type}</span>
+                              <span className="ml-2 text-xs font-mono text-neutral-500">x{record.quantity}</span>
+                            </td>
+                            <td className="px-6 py-4"><span className="px-2 py-0.5 rounded text-xs bg-neutral-800 text-neutral-300">CLOSED</span></td>
+                            <td className="px-6 py-4 font-mono text-xs text-neutral-400">
+                              <div>In: <span className="text-neutral-200">₹{record.entryPrice?.toFixed(2)}</span></div>
+                              {record.exitPrice ? <div>Out: <span className="text-neutral-200">₹{record.exitPrice?.toFixed(2)}</span></div> : null}
+                            </td>
+                            <td className="px-6 py-4 font-mono text-xs">
+                              <div className="text-emerald-400">H: ₹{(record.maxProfit || 0).toFixed(2)}</div>
+                              <div className="text-rose-400 mt-0.5">L: ₹{(record.maxLoss || 0).toFixed(2)}</div>
+                            </td>
+                            <td className="px-6 py-4 text-xs text-neutral-500 max-w-[200px] truncate" title={record.exitReason || ''}>
+                              {record.exitReason || '--'}
+                            </td>
+                            <td className="px-6 py-4 text-right font-mono font-bold">
+                              {record.realizedPnl !== null ? (
+                                <span className={record.realizedPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                                  {record.realizedPnl >= 0 ? '+' : ''}₹{record.realizedPnl?.toFixed(2)}
+                                </span>
+                              ) : <span className="text-neutral-600">--</span>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

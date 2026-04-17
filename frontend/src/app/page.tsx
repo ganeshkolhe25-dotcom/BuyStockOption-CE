@@ -1066,13 +1066,13 @@ export default function Home() {
           activeTab === 'history' && (
             <div className="flex flex-col">
               {renderHeatmap()}
-              {/* G4: Failed/rejected trade count */}
+              {/* G4: Failed/rejected trade count (Gann-9 only) */}
               {(() => {
-                const failedCount = history?.filter((r: any) => r.token === 'FAILED' || r.quantity === 0).length || 0;
+                const failedCount = history?.filter((r: any) => (r.strategyName === 'GANN_9' || !r.strategyName) && (r.token === 'FAILED' || r.quantity === 0)).length || 0;
                 return failedCount > 0 ? (
                   <div className="mb-4 px-4 py-3 bg-rose-500/10 border border-rose-500/20 rounded-xl text-sm text-rose-400 flex items-center gap-2">
                     <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                    <span><span className="font-bold">{failedCount}</span> rejected/failed trade{failedCount > 1 ? 's' : ''} today (option token unavailable or margin insufficient) — excluded from ledger below.</span>
+                    <span><span className="font-bold">{failedCount}</span> rejected/failed Gann-9 trade{failedCount > 1 ? 's' : ''} today (option token unavailable or margin insufficient) — excluded from ledger below.</span>
                   </div>
                 ) : null;
               })()}
@@ -1093,14 +1093,14 @@ export default function Home() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-neutral-800/50">
-                      {history?.filter((r: any) => r.quantity > 0 && r.token !== 'FAILED' && !(r.exitReason && r.exitReason.includes('Reconciled'))).length === 0 ? (
+                      {history?.filter((r: any) => (r.strategyName === 'GANN_9' || !r.strategyName) && r.quantity > 0 && r.token !== 'FAILED' && !(r.exitReason && r.exitReason.includes('Reconciled'))).length === 0 ? (
                         <tr>
                           <td colSpan={8} className="px-6 py-12 text-center text-neutral-500">
                             No valid trade history documented in the database yet.
                           </td>
                         </tr>
                       ) : (
-                        history?.filter((r: any) => r.quantity > 0 && r.token !== 'FAILED' && !(r.exitReason && r.exitReason.includes('Reconciled'))).map((record: any) => {
+                        history?.filter((r: any) => (r.strategyName === 'GANN_9' || !r.strategyName) && r.quantity > 0 && r.token !== 'FAILED' && !(r.exitReason && r.exitReason.includes('Reconciled'))).map((record: any) => {
                           const timeString = new Date(record.entryTime).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 
                           return (
@@ -1158,10 +1158,10 @@ export default function Home() {
 
                 {/* Mobile Layout for Trade History */}
                 <div className="block md:hidden divide-y divide-neutral-800">
-                  {history?.filter((r: any) => r.quantity > 0 && r.token !== 'FAILED' && !(r.exitReason && r.exitReason.includes('Reconciled'))).length === 0 ? (
+                  {history?.filter((r: any) => (r.strategyName === 'GANN_9' || !r.strategyName) && r.quantity > 0 && r.token !== 'FAILED' && !(r.exitReason && r.exitReason.includes('Reconciled'))).length === 0 ? (
                     <div className="px-4 py-8 text-center text-sm text-neutral-500">No valid trade history documented.</div>
                   ) : (
-                    history?.filter((r: any) => r.quantity > 0 && r.token !== 'FAILED' && !(r.exitReason && r.exitReason.includes('Reconciled'))).map((record: any) => {
+                    history?.filter((r: any) => (r.strategyName === 'GANN_9' || !r.strategyName) && r.quantity > 0 && r.token !== 'FAILED' && !(r.exitReason && r.exitReason.includes('Reconciled'))).map((record: any) => {
                       const isProfit = record.realizedPnl !== null && record.realizedPnl >= 0;
                       return (
                         <div key={record.id} className="p-4 flex flex-col gap-3">
