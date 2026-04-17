@@ -152,7 +152,9 @@ export class HeartbeatService {
                 }
 
                 if (!isSustaining) {
-                    this.logger.warn(`❌ SIGNAL INVALIDATED: [${entry.symbol}] LTP ₹${ltp} moved away from ${entry.type} trigger ₹${entry.triggerPrice}. Removing from Watchlist.`);
+                    const invalidMsg = `Signal Invalidated: LTP ₹${ltp} moved away from ${entry.type} trigger ₹${entry.triggerPrice} during sustain period.`;
+                    this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
+                    await this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
                     await this.cacheManager.del(key);
                     updatedKeys = updatedKeys.filter(k => k !== key);
                     continue;

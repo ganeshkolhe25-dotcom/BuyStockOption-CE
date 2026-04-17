@@ -78,7 +78,7 @@ export class ShoonyaService implements OnModuleInit {
                 vc: dbConfig?.vc || process.env.SHOONYA_VC || '',
                 appkey: dbConfig?.appkey || process.env.SHOONYA_APPKEY || '',
                 // @ts-ignore
-                expiryMonth: dbConfig?.expiryMonth || 'APR'
+                expiryMonth: dbConfig?.expiryMonth || 'AUTO'
             };
         } catch {
             return {
@@ -87,7 +87,7 @@ export class ShoonyaService implements OnModuleInit {
                 factor2: process.env.SHOONYA_FACTOR2 || '',
                 vc: process.env.SHOONYA_VC || '',
                 appkey: process.env.SHOONYA_APPKEY || '',
-                expiryMonth: 'APR'
+                expiryMonth: 'AUTO'
             };
         }
     }

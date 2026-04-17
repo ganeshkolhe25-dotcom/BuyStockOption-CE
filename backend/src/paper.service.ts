@@ -86,7 +86,7 @@ export class PaperTradingService implements OnModuleInit {
     /**
      * Store failed trades into the Ledger directly (e.g. Broken API, Missing Options)
      */
-    async logFailedTrade(symbol: string, type: string, triggerPrice: number, reason: string) {
+    async logFailedTrade(symbol: string, type: string, triggerPrice: number, reason: string, strategyName?: string) {
         await this.prisma.tradeHistory.create({
             data: {
                 symbol,
@@ -98,7 +98,8 @@ export class PaperTradingService implements OnModuleInit {
                 isPaperTrade: true,
                 exitReason: reason,
                 exitTime: new Date(),
-                realizedPnl: 0
+                realizedPnl: 0,
+                strategyName: strategyName || 'UNKNOWN'
             }
         });
         this.logger.error(`Trade Rejected for [${symbol}] ${type}. Reason: ${reason}`);
@@ -109,13 +110,17 @@ export class PaperTradingService implements OnModuleInit {
      */
     async placeBuyOrder(symbol: string, token: string, tradingSymbol: string, type: 'CE' | 'PE', qty: number, price: number, targetPrice?: number, slPrice?: number, strategyName?: string) {
         if (this.isTradingHalted) {
-            this.logger.warn(`TRADE REJECTED: Day trading halted for Market Close. Cannot buy ${symbol}.`);
+            const msg = `Market Close: Universal exit triggered. No new orders.`;
+            await this.logFailedTrade(symbol, type, price, msg, strategyName);
+            this.logger.warn(`TRADE REJECTED: ${msg}`);
             return false;
         }
 
         // Enforce per-day trade count limits at order placement (not at scan time)
         if (await this.isTradingHaltedForDay(strategyName)) {
-            this.logger.warn(`TRADE REJECTED: Daily trade limit reached for ${strategyName || 'overall'}. Cannot buy ${symbol}.`);
+            const msg = `Daily trade limit reached for ${strategyName || 'overall'}. Signal missed.`;
+            await this.logFailedTrade(symbol, type, price, msg, strategyName);
+            this.logger.warn(`TRADE REJECTED: ${msg} [${symbol}]`);
             return false;
         }
 

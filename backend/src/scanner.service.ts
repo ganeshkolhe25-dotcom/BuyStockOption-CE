@@ -57,10 +57,7 @@ export class ScannerService implements OnModuleInit {
             return;
         }
 
-        if (await this.paperTrading.isTradingHaltedForDay('GANN_9')) {
-            this.logger.warn('Gann Square-9 Strategy Halted or Limit Reached. Skipping morning scan.');
-            return;
-        }
+        // Trade limit is enforced at order placement (placeBuyOrder), not at scan time
 
         try {
             const stocks = await this.nseService.scanGainersLosers();
@@ -142,10 +139,7 @@ export class ScannerService implements OnModuleInit {
             return;
         }
 
-        if (await this.paperTrading.isTradingHaltedForDay('GANN_ANGLE')) {
-            this.logger.warn('Gann Angle Strategy Halted or Limit Reached. Skipping scan.');
-            return;
-        }
+        // Trade limit is enforced at order placement (placeBuyOrder), not at scan time
 
         try {
             const stocks = await this.nseService.scanNifty100Quotes();
@@ -201,10 +195,7 @@ export class ScannerService implements OnModuleInit {
             return;
         }
 
-        if (await this.paperTrading.isTradingHaltedForDay('EMA_5')) {
-            this.logger.warn('5 EMA Strategy Halted or Limit Reached. Skipping...');
-            return;
-        }
+        // Trade limit is enforced at order placement (placeBuyOrder), not at scan time
 
         try {
             const stocks = await this.nseService.scanEma5mUniverse();
