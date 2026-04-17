@@ -358,6 +358,30 @@ export class NseService implements OnModuleInit {
         const priceMap: Record<string, number> = {};
         const restSymbols: string[] = [];
 
+        // Resolve tokens for any symbols missing from tokenMap (happens on container restart).
+        // Run all resolutions in parallel — each takes one SearchScrip call, done once per symbol per process lifetime.
+        const unknownSyms = symbols.filter(s => !this.tokenMap.get(s));
+        if (unknownSyms.length > 0) {
+            const resolved = await Promise.all(
+                unknownSyms.map(async sym => ({
+                    sym,
+                    token: await this.shoonya.searchSecurityToken(sym)
+                }))
+            );
+            const newTokens: string[] = [];
+            for (const { sym, token } of resolved) {
+                if (token) {
+                    this.tokenMap.set(sym, token);
+                    newTokens.push(token);
+                }
+            }
+            // Subscribe newly resolved tokens to WS tick feed so next cycle reads from cache
+            if (newTokens.length > 0) {
+                this.shoonya.subscribeTokens('NSE', newTokens);
+                this.logger.log(`[TokenMap] Resolved & subscribed ${newTokens.length}/${unknownSyms.length} missing symbols to tick feed.`);
+            }
+        }
+
         for (const sym of symbols) {
             const token = this.tokenMap.get(sym);
             if (!token) continue;

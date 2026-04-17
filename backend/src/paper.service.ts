@@ -403,7 +403,8 @@ export class PaperTradingService implements OnModuleInit {
                 where: {
                     strategyName: strategyName,
                     entryTime: { gte: startOfDay },
-                    status: { not: 'REJECTED' }
+                    status: { not: 'REJECTED' },
+                    token: { not: 'FAILED' }  // exclude logFailedTrade records
                 }
             });
 
@@ -421,7 +422,8 @@ export class PaperTradingService implements OnModuleInit {
             const count = await this.prisma.tradeHistory.count({
                 where: {
                     entryTime: { gte: startOfDay },
-                    status: { not: 'REJECTED' }
+                    status: { not: 'REJECTED' },
+                    token: { not: 'FAILED' }  // exclude logFailedTrade records
                 }
             });
             if (count >= config.maxTrades) {
