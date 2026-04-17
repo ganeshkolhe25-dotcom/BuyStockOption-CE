@@ -103,6 +103,7 @@ export class HeartbeatService {
      */
     @Cron(CronExpression.EVERY_30_SECONDS)
     async processHeartbeatWatchlist() {
+        if (!this.isMarketHours()) return;
         // NOTE: Do NOT gate on trade limits here — we still want to sustain-check and
         // show entries in the watchlist UI even when the daily limit is reached.
         // The limit is enforced inside executeOptionTrade() at actual order placement.
@@ -408,6 +409,7 @@ export class HeartbeatService {
      */
     @Cron('*/15 * * * * *')
     async enforceDynamicExits() {
+        if (!this.isMarketHours()) return;
         if (await this.paperTrading.isTradingHaltedForDay()) return;
 
         const summary = await this.paperTrading.getPortfolioSummary();
@@ -551,6 +553,7 @@ export class HeartbeatService {
      */
     @Cron('*/15 * * * * *')
     async processPendingLimitOrders() {
+        if (!this.isMarketHours()) return;
         if (this.pendingLimitOrders.size === 0) return;
 
         const TWO_MIN_MS = 2 * 60 * 1000;
@@ -635,5 +638,13 @@ export class HeartbeatService {
             }
         }
         return watchlist;
+    }
+
+    private isMarketHours(): boolean {
+        const now = new Date();
+        const day = now.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'short' });
+        if (day === 'Sat' || day === 'Sun') return false;
+        const time = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+        return time >= '09:00:00' && time <= '15:35:00';
     }
 }

@@ -258,11 +258,20 @@ export class ScannerService implements OnModuleInit {
         return JSON.parse(cached);
     }
 
+    private isMarketHours(): boolean {
+        const now = new Date();
+        const day = now.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'short' });
+        if (day === 'Sat' || day === 'Sun') return false;
+        const time = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+        return time >= '09:00:00' && time <= '15:35:00';
+    }
+
     /**
      * Keep the Scanner Dashboard Top-Right Corner Prices Real-Time!
      */
     @Cron('*/15 * * * * *')
     async syncLiveScannerPrices() {
+        if (!this.isMarketHours()) return;
         const cachedStr = await this.cacheManager.get<string>('DAILY_SCAN_RESULTS');
         if (!cachedStr) return;
 
