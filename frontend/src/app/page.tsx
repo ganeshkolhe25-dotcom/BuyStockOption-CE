@@ -422,7 +422,7 @@ export default function Home() {
       {/* Sidebar - Vertical Tabs */}
       <aside className="hidden md:flex w-64 bg-neutral-900 border-r border-neutral-800 flex-col flex-shrink-0 z-20">
         <div className="p-6 pb-2">
-          <h1 className="text-xl font-bold tracking-tight bg-gradient-to-br from-white to-neutral-400 bg-clip-text text-transparent">Gargee Trading</h1>
+          <h1 className="text-xl font-bold tracking-tight bg-gradient-to-br from-white to-neutral-400 bg-clip-text text-transparent">Gargee Algo Trading</h1>
           <div className="text-[10px] text-neutral-500 font-mono mt-1 mb-6">MULTI-STRATEGY ENGINE</div>
         </div>
         
@@ -524,7 +524,7 @@ export default function Home() {
             </div>
             <div>
               <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-br from-white to-neutral-400 bg-clip-text text-transparent">
-                Gargee Trading Company
+                Gargee Algo Trading Company
               </h1>
               <div className="text-sm font-semibold text-neutral-300 mt-1">Strategy - "Gann-9"</div>
               <div className="text-xs text-neutral-500 mt-0.5 mb-2">Developed by - "Ganesh Kolhe"</div>
