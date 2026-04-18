@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Gargee Algo Trading | Automated Options Intelligence</title>
+  <meta name="description" content="Institutional-grade algorithmic trading for Nifty 100 options — Gann-9, Gann Angle, and 5-EMA strategies with real-time risk management." />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root { --obsidian: #0B0E11; --gold: #D4A843; --silver: #8A9BA8; --emerald: #10B981; --red: #EF4444; }
+    body { background-color: var(--obsidian); font-family: 'Segoe UI', system-ui, sans-serif; }
+    .gold { color: var(--gold); }
+    .silver { color: var(--silver); }
+    .border-gold { border-color: var(--gold); }
+    .bg-card { background-color: #141920; }
+    .bg-card-hover:hover { background-color: #1a2230; }
+    .btn-gold {
+      background: linear-gradient(135deg, #D4A843 0%, #B8892E 100%);
+      color: #0B0E11;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      transition: all 0.2s;
+      box-shadow: 0 0 24px rgba(212,168,67,0.3);
+    }
+    .btn-gold:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 0 36px rgba(212,168,67,0.5);
+    }
+    .glow-line {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--gold), transparent);
+    }
+    .tag {
+      background: rgba(212,168,67,0.1);
+      border: 1px solid rgba(212,168,67,0.3);
+      color: var(--gold);
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      padding: 3px 10px;
+      border-radius: 999px;
+      text-transform: uppercase;
+    }
+    .strategy-card {
+      border: 1px solid rgba(212,168,67,0.15);
+      transition: border-color 0.2s, transform 0.2s;
+    }
+    .strategy-card:hover {
+      border-color: rgba(212,168,67,0.5);
+      transform: translateY(-3px);
+    }
+    .risk-item {
+      border-left: 2px solid var(--gold);
+    }
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .fade-up { animation: fadeUp 0.7s ease both; }
+    .fade-up-2 { animation: fadeUp 0.7s 0.15s ease both; }
+    .fade-up-3 { animation: fadeUp 0.7s 0.3s ease both; }
+  </style>
+</head>
+<body class="text-white min-h-screen">
+
+  <!-- NAV -->
+  <nav class="fixed top-0 left-0 right-0 z-50" style="background:rgba(11,14,17,0.92);backdrop-filter:blur(12px);border-bottom:1px solid rgba(212,168,67,0.12);">
+    <div class="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-lg flex items-center justify-center" style="background:linear-gradient(135deg,#D4A843,#8B5E1A);">
+          <span class="text-black font-black text-sm">G</span>
+        </div>
+        <span class="font-bold text-white text-base sm:text-lg tracking-wide">Gargee <span class="gold">Algo</span> Trading</span>
+      </div>
+      <a href="/terminal" class="btn-gold px-4 py-2 rounded-lg text-sm">Launch Terminal</a>
+    </div>
+  </nav>
+
+  <!-- HERO -->
+  <section class="min-h-screen flex flex-col items-center justify-center text-center px-4 pt-20 pb-16 relative overflow-hidden">
+    <div class="absolute inset-0 pointer-events-none" style="background:radial-gradient(ellipse 70% 50% at 50% 40%, rgba(212,168,67,0.06) 0%, transparent 70%);"></div>
+    <div class="relative max-w-4xl mx-auto">
+      <div class="fade-up mb-4 flex justify-center">
+        <span class="tag">Nifty 100 Options · Fully Automated</span>
+      </div>
+      <h1 class="fade-up-2 text-3xl sm:text-5xl lg:text-6xl font-black mb-6 leading-tight">
+        Institutional-Grade<br/>
+        <span class="gold">Algorithmic Intelligence</span><br/>
+        for Options Traders
+      </h1>
+      <p class="fade-up-3 text-base sm:text-lg silver max-w-2xl mx-auto mb-10 leading-relaxed">
+        OptionNagari by Gargee Algo Trading executes multi-strategy options trades on Nifty 100 stocks
+        with real-time price monitoring, dynamic stop-losses, and RSI-ADX signal validation — no manual intervention required.
+      </p>
+      <div class="fade-up-3 flex flex-col sm:flex-row gap-4 justify-center">
+        <a href="/terminal" class="btn-gold px-8 py-4 rounded-xl text-base inline-block">
+          Launch OptionNagari Terminal &rarr;
+        </a>
+      </div>
+      <p class="mt-6 text-xs silver opacity-60">Institutional terminal — authorised access only</p>
+    </div>
+
+    <!-- floating stats strip -->
+    <div class="absolute bottom-0 left-0 right-0">
+      <div class="glow-line"></div>
+      <div class="max-w-6xl mx-auto px-4 py-4 grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
+        <div><p class="gold font-bold text-lg">3</p><p class="silver text-xs">Active Strategies</p></div>
+        <div><p class="gold font-bold text-lg">30s</p><p class="silver text-xs">Price Monitor Cycle</p></div>
+        <div><p class="gold font-bold text-lg">Nifty 100</p><p class="silver text-xs">Universe</p></div>
+        <div><p class="gold font-bold text-lg">24 × 5</p><p class="silver text-xs">Automated Execution</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WHY GARGEE ALGO -->
+  <section class="py-20 px-4">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-14">
+        <span class="tag">Why Gargee Algo</span>
+        <h2 class="text-2xl sm:text-4xl font-black mt-4 mb-3">Built on <span class="gold">Discipline</span>, Not Emotion</h2>
+        <p class="silver text-sm sm:text-base max-w-xl mx-auto">Every trade is governed by pre-defined rules. No override. No hesitation. No FOMO.</p>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        <!-- card -->
+        <div class="bg-card strategy-card rounded-2xl p-6">
+          <div class="text-3xl mb-3">⚡</div>
+          <h3 class="font-bold text-white mb-2">Real-Time Signal Engine</h3>
+          <p class="silver text-sm leading-relaxed">30-second price monitoring with batch WebSocket LTP feeds. Signals fire the instant a level is crossed — no polling delay.</p>
+        </div>
+        <div class="bg-card strategy-card rounded-2xl p-6">
+          <div class="text-3xl mb-3">🛡️</div>
+          <h3 class="font-bold text-white mb-2">Multi-Layer Risk Control</h3>
+          <p class="silver text-sm leading-relaxed">Dynamic stop-losses at the previous Gann level, RDX composite filter (RSI + ADX), and 3-minute sustain verification before execution.</p>
+        </div>
+        <div class="bg-card strategy-card rounded-2xl p-6">
+          <div class="text-3xl mb-3">📐</div>
+          <h3 class="font-bold text-white mb-2">Proven Mathematical Levels</h3>
+          <p class="silver text-sm leading-relaxed">Gann Square of 9 levels derived from previous day's close — R1/R2/R3 and S1/S2/S3 — with directional 0.5% crossing windows.</p>
+        </div>
+        <div class="bg-card strategy-card rounded-2xl p-6">
+          <div class="text-3xl mb-3">🔁</div>
+          <h3 class="font-bold text-white mb-2">Automatic Trade Lifecycle</h3>
+          <p class="silver text-sm leading-relaxed">Entry, monitoring, stop-loss enforcement, and exit are all automated. The system runs the full trade from signal to close.</p>
+        </div>
+        <div class="bg-card strategy-card rounded-2xl p-6">
+          <div class="text-3xl mb-3">📊</div>
+          <h3 class="font-bold text-white mb-2">Live Dashboard</h3>
+          <p class="silver text-sm leading-relaxed">Real-time P&amp;L, open positions, strategy ledger, and daily performance — all visible in one terminal view. No spreadsheet required.</p>
+        </div>
+        <div class="bg-card strategy-card rounded-2xl p-6">
+          <div class="text-3xl mb-3">🏦</div>
+          <h3 class="font-bold text-white mb-2">Shoonya API Integration</h3>
+          <p class="silver text-sm leading-relaxed">Directly connected to Shoonya broker API for order placement, position tracking, and live options chain data.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- STRATEGIES -->
+  <section class="py-20 px-4" style="background:rgba(20,25,32,0.6);">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-14">
+        <span class="tag">Strategy Suite</span>
+        <h2 class="text-2xl sm:text-4xl font-black mt-4 mb-3">Three <span class="gold">Distinct Edges</span></h2>
+        <p class="silver text-sm sm:text-base max-w-xl mx-auto">Each strategy targets a different market behaviour — breakout, momentum, and trend continuation.</p>
+      </div>
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+
+        <!-- Gann-9 -->
+        <div class="bg-card strategy-card rounded-2xl p-7 flex flex-col">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-10 h-10 rounded-xl flex items-center justify-center text-black font-black" style="background:linear-gradient(135deg,#D4A843,#8B5E1A);">9</div>
+            <div>
+              <h3 class="font-bold text-white text-lg">Gann Square of 9</h3>
+              <span class="tag" style="font-size:0.6rem;">Breakout</span>
+            </div>
+          </div>
+          <p class="silver text-sm leading-relaxed mb-4 flex-1">
+            Computes resistance (R1–R3) and support (S1–S3) from the previous day's close using Gann's Square of 9 formula.
+            Triggers when the stock crosses a level with a 0.5% directional window and sustains for 3 minutes.
+          </p>
+          <div class="space-y-1 text-xs silver">
+            <div class="flex justify-between"><span>Entry Validation</span><span class="gold">3-min sustain</span></div>
+            <div class="flex justify-between"><span>Stop-Loss</span><span class="gold">Previous Gann level</span></div>
+            <div class="flex justify-between"><span>Signal Filter</span><span class="gold">RDX &gt; 55 (CE) / &lt; 45 (PE)</span></div>
+          </div>
+        </div>
+
+        <!-- Gann Angle -->
+        <div class="bg-card strategy-card rounded-2xl p-7 flex flex-col">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-10 h-10 rounded-xl flex items-center justify-center text-black font-black text-xs" style="background:linear-gradient(135deg,#818CF8,#4F46E5);">GA</div>
+            <div>
+              <h3 class="font-bold text-white text-lg">Gann Angle</h3>
+              <span class="tag" style="font-size:0.6rem;border-color:rgba(129,140,248,0.4);background:rgba(129,140,248,0.1);color:#818CF8;">Trend</span>
+            </div>
+          </div>
+          <p class="silver text-sm leading-relaxed mb-4 flex-1">
+            Monitors price relative to Gann angle time-price vectors. Executes on immediate angle breaks with momentum confirmation
+            and enforces a 2-minute stop-loss sustain guard.
+          </p>
+          <div class="space-y-1 text-xs silver">
+            <div class="flex justify-between"><span>Entry Validation</span><span style="color:#818CF8;">Immediate on break</span></div>
+            <div class="flex justify-between"><span>Stop-Loss Sustain</span><span style="color:#818CF8;">2-minute guard</span></div>
+            <div class="flex justify-between"><span>Monitor Cycle</span><span style="color:#818CF8;">30 seconds</span></div>
+          </div>
+        </div>
+
+        <!-- 5 EMA -->
+        <div class="bg-card strategy-card rounded-2xl p-7 flex flex-col">
+          <div class="flex items-center gap-3 mb-4">
+            <div class="w-10 h-10 rounded-xl flex items-center justify-center text-black font-black text-xs" style="background:linear-gradient(135deg,#10B981,#065F46);">5E</div>
+            <div>
+              <h3 class="font-bold text-white text-lg">5 EMA</h3>
+              <span class="tag" style="font-size:0.6rem;border-color:rgba(16,185,129,0.4);background:rgba(16,185,129,0.1);color:#10B981;">Momentum</span>
+            </div>
+          </div>
+          <p class="silver text-sm leading-relaxed mb-4 flex-1">
+            Tracks 5-period EMA crossovers on intraday candles. Enters options on confirmed crossover with 1-minute sustain
+            and RSI-ADX composite confirmation to avoid false signals.
+          </p>
+          <div class="space-y-1 text-xs silver">
+            <div class="flex justify-between"><span>Entry Validation</span><span style="color:#10B981;">1-min sustain</span></div>
+            <div class="flex justify-between"><span>Stop-Loss</span><span style="color:#10B981;">EMA re-cross</span></div>
+            <div class="flex justify-between"><span>Signal Filter</span><span style="color:#10B981;">RSI-ADX composite</span></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- RISK FRAMEWORK -->
+  <section class="py-20 px-4">
+    <div class="max-w-6xl mx-auto">
+      <div class="text-center mb-14">
+        <span class="tag">Risk Framework</span>
+        <h2 class="text-2xl sm:text-4xl font-black mt-4 mb-3">Capital Protection <span class="gold">First</span></h2>
+        <p class="silver text-sm sm:text-base max-w-xl mx-auto">Every position is governed by hard rules — the system cannot override them, and neither can emotion.</p>
+      </div>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-5 max-w-4xl mx-auto">
+        <div class="bg-card rounded-2xl p-5 risk-item pl-6">
+          <h4 class="font-bold text-white mb-1">Dynamic Stop-Loss</h4>
+          <p class="silver text-sm">SL is always set at the previous Gann level — not a fixed percentage — so it adapts to the actual market structure of each stock.</p>
+        </div>
+        <div class="bg-card rounded-2xl p-5 risk-item pl-6">
+          <h4 class="font-bold text-white mb-1">RDX Composite Filter</h4>
+          <p class="silver text-sm">RDX = RSI + (ADX−20)/5. CE trades require RDX &gt; 55; PE trades require RDX &lt; 45. Weak momentum trades are rejected automatically.</p>
+        </div>
+        <div class="bg-card rounded-2xl p-5 risk-item pl-6">
+          <h4 class="font-bold text-white mb-1">Sustain Verification</h4>
+          <p class="silver text-sm">Signals must hold for 1–3 minutes (strategy-dependent) before order placement. This eliminates wick-based false breakouts.</p>
+        </div>
+        <div class="bg-card rounded-2xl p-5 risk-item pl-6">
+          <h4 class="font-bold text-white mb-1">Market Hours Guard</h4>
+          <p class="silver text-sm">Scanner only runs 09:20–14:45 IST. Positions are not taken in the first 20 minutes (high volatility) or after 14:45 (end-of-day risk).</p>
+        </div>
+        <div class="bg-card rounded-2xl p-5 risk-item pl-6">
+          <h4 class="font-bold text-white mb-1">SL Sustain Before Exit</h4>
+          <p class="silver text-sm">Even a stop-loss breach is confirmed for 2 minutes before exit — guarding against stop-hunts and momentary dips that recover.</p>
+        </div>
+        <div class="bg-card rounded-2xl p-5 risk-item pl-6">
+          <h4 class="font-bold text-white mb-1">No Overrides, Ever</h4>
+          <p class="silver text-sm">The system executes rules mechanically. There is no manual override mechanism — protecting against emotional decisions at critical moments.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA FOOTER -->
+  <section class="py-20 px-4 text-center relative overflow-hidden">
+    <div class="absolute inset-0 pointer-events-none" style="background:radial-gradient(ellipse 60% 60% at 50% 50%, rgba(212,168,67,0.05) 0%, transparent 70%);"></div>
+    <div class="glow-line mb-16 max-w-xl mx-auto"></div>
+    <div class="relative max-w-2xl mx-auto">
+      <span class="tag">Authorised Access</span>
+      <h2 class="text-2xl sm:text-4xl font-black mt-6 mb-4">Ready to run <span class="gold">OptionNagari</span>?</h2>
+      <p class="silver text-sm sm:text-base mb-10 leading-relaxed">
+        The terminal is available to authorised users only. Log in with your credentials to access live strategies, real-time P&amp;L, and the full trading dashboard.
+      </p>
+      <a href="/terminal" class="btn-gold px-10 py-4 rounded-xl text-base inline-block">
+        Launch OptionNagari Terminal &rarr;
+      </a>
+      <p class="mt-6 text-xs silver opacity-50">Protected by institutional-grade login. Unauthorised access is not possible.</p>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer style="border-top:1px solid rgba(212,168,67,0.12);background:#0B0E11;" class="py-8 px-4">
+    <div class="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <div class="w-7 h-7 rounded-lg flex items-center justify-center" style="background:linear-gradient(135deg,#D4A843,#8B5E1A);">
+          <span class="text-black font-black text-xs">G</span>
+        </div>
+        <span class="silver text-sm">Gargee Algo Trading &mdash; OptionNagari</span>
+      </div>
+      <p class="silver text-xs opacity-50 text-center">
+        &copy; 2026 Gargee Algo Trading. For informational use only. Options trading carries significant risk.
+      </p>
+    </div>
+  </footer>
+
+</body>
+</html>
