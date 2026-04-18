@@ -34,3 +34,5 @@ backend/dev.db
 # Misc
 .vercel
 *.pem
+vm-app-new.env
+vm-app.env
