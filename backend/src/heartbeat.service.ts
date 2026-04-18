@@ -153,7 +153,11 @@ export class HeartbeatService {
                     isSustaining = ltp <= (entry.triggerPrice + buffer);
                 }
 
-                if (!isSustaining) {
+                const isGann9 = entry.strategyName === 'GANN_9';
+
+                // GANN_9: allow free movement during the 3-min wait — only check at the final mark.
+                // EMA_5 / GANN_ANGLE: invalidate immediately if LTP moves away from trigger.
+                if (!isSustaining && !isGann9) {
                     const invalidMsg = `Signal Invalidated: LTP ₹${ltp} moved away from ${entry.type} trigger ₹${entry.triggerPrice} during sustain period.`;
                     this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
                     await this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
@@ -162,14 +166,23 @@ export class HeartbeatService {
                     continue;
                 }
 
-                // GANN_ANGLE: execute immediately — the 5-min scan interval itself is the confirmation
+                // GANN_ANGLE: execute immediately — fresh cross + momentum filter is the confirmation
                 // EMA_5: 1-minute sustain (candle close + RSI + volume already confirms)
-                // GANN_9: 5-minute sustain (breakout level needs momentum confirmation)
-                const sustainMs = isGannAngle ? 0 : isEma ? 1 * 60 * 1000 : 5 * 60 * 1000;
+                // GANN_9: 3-minute single final check (allows dips/recoveries within the window)
+                const sustainMs = isGannAngle ? 0 : isEma ? 1 * 60 * 1000 : 3 * 60 * 1000;
                 const timeElapsedMs = Date.now() - entry.breakoutTime;
 
                 if (timeElapsedMs >= sustainMs) {
-                    const label = isGannAngle ? 'IMMEDIATE' : isEma ? '1-MIN' : '5-MIN';
+                    // Final check at sustain mark — kill if not sustaining (applies to all strategies)
+                    if (!isSustaining) {
+                        const invalidMsg = `Signal Invalidated at 3-min check: LTP ₹${ltp} not sustaining ${entry.type} trigger ₹${entry.triggerPrice}.`;
+                        this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
+                        await this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
+                        await this.cacheManager.del(key);
+                        updatedKeys = updatedKeys.filter(k => k !== key);
+                        continue;
+                    }
+                    const label = isGannAngle ? 'IMMEDIATE' : isEma ? '1-MIN' : '3-MIN';
                     this.logger.log(`🚀 ${label} SIGNAL CONFIRMED FOR [${entry.symbol}] AT ₹${ltp}! Triggering ${entry.type} Option Entry.`);
 
                     // Remove from watchlist so we don't buy it twice
@@ -284,16 +297,23 @@ export class HeartbeatService {
     }
 
     /**
-     * Check the cached 9:20 AM Setup List 5 seconds after each 5-minute candle close.
-     * Fires at 9:00:05, 9:05:05 … 14:55:05, 15:00:05 IST (Mon-Fri).
-     * Checking at candle close boundaries means the LTP we compare against each trigger
-     * is the just-closed candle's close price — preventing wick-induced false signals.
+     * Gann-9 Level Monitor — runs every 30 seconds, 9:20 AM – 2:45 PM IST (Mon-Fri).
+     *
+     * Replaces the old 5-min candle-boundary cron. Changes:
+     *   1. 30-second polling eliminates the 4-min 55-sec blind spot.
+     *   2. getBatchLTP() reads from WS tick cache (zero REST per stock).
+     *   3. Directional 0.5% fresh-cross window — CE only fires above trigger,
+     *      PE only fires below trigger, preventing pre-cross false entries.
+     *   4. Proper SL levels — previous Gann level, not the trigger itself.
+     *   5. RDX guard always enforced — no bypass when rdx is undefined.
      */
-    @Cron('5 */5 9-15 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    @Cron('*/30 * * * * *')
     async continuousDailyScanMonitor() {
-        // NOTE: Scanning always runs regardless of trade limits — stocks should appear
-        // in the watchlist even if the daily trade limit is reached. The limit is only
-        // enforced at order placement in executeOptionTrade().
+        if (!this.isMarketHours()) return;
+
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+        if (timeStr < '09:20:00' || timeStr > '14:45:00') return;
 
         // Respect the gann9Enabled toggle — if disabled mid-day, stop scanning immediately
         const config = await this.paperTrading.getStrategyConfig();
@@ -302,106 +322,88 @@ export class HeartbeatService {
             return;
         }
 
-        // Stop all new scanning after 2:45 PM
-        const now = new Date();
-        const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
-        if (timeStr > '14:45:00') return;
-
         const cachedStr = await this.cacheManager.get<string>('DAILY_SCAN_RESULTS');
         if (!cachedStr) return;
 
         const scan = JSON.parse(cachedStr);
         if (!scan.data || scan.data.length === 0) return;
 
-        // Skip those we already traded today (Only ONE entry per stock per day allowed)
         const todayTraded = await this.paperTrading.getTodayTradedSymbols('GANN_9');
+        const eligibleStocks = scan.data.filter((s: any) => !todayTraded.includes(s.symbol));
+        if (eligibleStocks.length === 0) return;
 
-        for (const stock of scan.data) {
-            if (todayTraded.includes(stock.symbol)) continue;
+        // Single batch LTP call — reads WS tick cache, falls back to one REST batch
+        const ltpMap = await this.nseService.getBatchLTP(eligibleStocks.map((s: any) => s.symbol));
 
-            const ltp = await this.nseService.getLiveLTP(stock.symbol);
+        // Directional fresh-cross detectors — 0.5% window on the correct side only
+        const freshCE = (price: number, trigger: number) => price >= trigger && price <= trigger * 1.005;
+        const freshPE = (price: number, trigger: number) => price <= trigger && price >= trigger * 0.995;
+
+        for (const stock of eligibleStocks) {
+            const ltp = ltpMap[stock.symbol];
             if (!ltp) continue;
 
             const levels = stock.levels;
             const openLtp = stock.openLtp;
-            let ceTrigger = null;
-            let peTrigger = null;
+            let trigger: number | null = null;
             let target = 0;
             let sl = 0;
             let tradeType: 'CE' | 'PE' | null = null;
 
-            // We only want to add it to the Watchlist if it is *currently crossing* the trigger.
-            // 0.30% tolerance: at ₹2000 this = ₹6 buffer. Tighter than 0.80% to avoid premature entries.
-            const isCrossing = (price: number, trigger: number) => Math.abs((price - trigger) / trigger) * 100 < 0.30;
-
-            // 1. GAP DOWN REVERSAL (CE Buy)
-            // If stock opens gap down (below S1) and moves upside crossing S1
-            if (openLtp < levels.S1 && ltp > levels.S1 && isCrossing(ltp, levels.S1)) {
-                ceTrigger = levels.S1;
-                target = levels.previousClose;
-                sl = levels.S1; // SL is the trigger level itself
-                tradeType = 'CE';
+            // 1. GAP DOWN REVERSAL (CE): opened below S1, now crossing back above S1
+            if (openLtp < levels.S1 && freshCE(ltp, levels.S1)) {
+                tradeType = 'CE'; trigger = levels.S1;
+                target = levels.previousClose; sl = levels.S2;
             }
-            // 2. GAP UP REVERSAL (PE Buy)
-            // If stock opens gap up (above R1) and moves downside crossing R1
-            else if (openLtp > levels.R1 && ltp < levels.R1 && isCrossing(ltp, levels.R1)) {
-                peTrigger = levels.R1;
-                target = levels.previousClose;
-                sl = levels.R1; // SL is the trigger level itself
-                tradeType = 'PE';
+            // 2. GAP UP REVERSAL (PE): opened above R1, now crossing back below R1
+            else if (openLtp > levels.R1 && freshPE(ltp, levels.R1)) {
+                tradeType = 'PE'; trigger = levels.R1;
+                target = levels.previousClose; sl = levels.R2;
             }
-            // 3. GAP UP R2 CROSSOVER (CE Buy) 
-            else if (openLtp > levels.R1 && openLtp <= levels.R2 && ltp > levels.R2 && ltp < levels.R3 && isCrossing(ltp, levels.R2)) {
-                ceTrigger = levels.R2;
-                target = levels.R3;
-                sl = levels.R2; // SL is the trigger level itself
-                tradeType = 'CE';
+            // 3. GAP UP R2 CROSSOVER (CE): opened between R1–R2, now crossing above R2
+            else if (openLtp > levels.R1 && openLtp <= levels.R2 && freshCE(ltp, levels.R2)) {
+                tradeType = 'CE'; trigger = levels.R2;
+                target = levels.R3; sl = levels.R1;
             }
-            // 4. GAP DOWN S2 CROSSDOWN (PE Buy) 
-            else if (openLtp < levels.S1 && openLtp >= levels.S2 && ltp < levels.S2 && ltp > levels.S3 && isCrossing(ltp, levels.S2)) {
-                peTrigger = levels.S2;
-                target = levels.S3;
-                sl = levels.S2; // SL is the trigger level itself
-                tradeType = 'PE';
+            // 4. GAP DOWN S2 CROSSDOWN (PE): opened between S1–S2, now crossing below S2
+            else if (openLtp < levels.S1 && openLtp >= levels.S2 && freshPE(ltp, levels.S2)) {
+                tradeType = 'PE'; trigger = levels.S2;
+                target = levels.S3; sl = levels.S1;
             }
-            // 5. STANDARD BREAKOUT (CE Buy)
-            else if (openLtp <= levels.R1 && ltp > levels.R1 && ltp < levels.R2 && isCrossing(ltp, levels.R1)) {
-                ceTrigger = levels.R1;
-                target = levels.R2;
-                sl = levels.R1; // SL is the trigger level itself
-                tradeType = 'CE';
+            // 5. STANDARD BREAKOUT (CE): opened below R1, now crossing above R1
+            else if (openLtp <= levels.R1 && freshCE(ltp, levels.R1)) {
+                tradeType = 'CE'; trigger = levels.R1;
+                target = levels.R2; sl = levels.previousClose;
             }
-            // 6. STANDARD BREAKDOWN (PE Buy)
-            else if (openLtp >= levels.S1 && ltp < levels.S1 && ltp > levels.S2 && isCrossing(ltp, levels.S1)) {
-                peTrigger = levels.S1;
-                target = levels.S2;
-                sl = levels.S1; // SL is the trigger level itself
-                tradeType = 'PE';
+            // 6. STANDARD BREAKDOWN (PE): opened above S1, now crossing below S1
+            else if (openLtp >= levels.S1 && freshPE(ltp, levels.S1)) {
+                tradeType = 'PE'; trigger = levels.S1;
+                target = levels.S2; sl = levels.previousClose;
             }
 
-            // Check if it's already in the watchlist before aggressively adding it
+            if (!tradeType || !trigger) continue;
+
+            // Skip if already in watchlist
             const existing = await this.cacheManager.get(`WATCHLIST:${stock.symbol}`);
             if (existing) continue;
 
-            // ── RDX filter (Item 2): require trend momentum for GANN_9 entries ──
-            // RDX = RSI + (ADX − 20) / 5 — higher = stronger bullish trend, lower = bearish
-            // CE: rdx > 55 confirms upward momentum; PE: rdx < 45 confirms downward momentum
-            if (stock.rdx !== undefined) {
-                if (tradeType === 'CE' && stock.rdx < 55) {
-                    this.logger.debug(`[${stock.symbol}] GANN_9 CE blocked: RDX=${stock.rdx.toFixed(1)} < 55`);
-                    continue;
-                }
-                if (tradeType === 'PE' && stock.rdx > 45) {
-                    this.logger.debug(`[${stock.symbol}] GANN_9 PE blocked: RDX=${stock.rdx.toFixed(1)} > 45`);
-                    continue;
-                }
+            // RDX filter: always enforced — block trade if no candle data (rdx undefined = no confirmation)
+            // RDX = RSI + (ADX − 20) / 5: CE needs rdx > 55 (bullish momentum), PE needs rdx < 45 (bearish)
+            const rdx = stock.rdx ?? null;
+            if (rdx === null) {
+                this.logger.debug(`[${stock.symbol}] GANN_9 blocked: no RDX data available`);
+                continue;
+            }
+            if (tradeType === 'CE' && rdx < 55) {
+                this.logger.debug(`[${stock.symbol}] GANN_9 CE blocked: RDX=${rdx.toFixed(1)} < 55`);
+                continue;
+            }
+            if (tradeType === 'PE' && rdx > 45) {
+                this.logger.debug(`[${stock.symbol}] GANN_9 PE blocked: RDX=${rdx.toFixed(1)} > 45`);
+                continue;
             }
 
-            if (tradeType === 'CE' && ceTrigger) {
-                await this.addToWatchlist(stock.symbol, ceTrigger, 'CE', target, sl, 'GANN_9');
-            } else if (tradeType === 'PE' && peTrigger) {
-                await this.addToWatchlist(stock.symbol, peTrigger, 'PE', target, sl, 'GANN_9');
-            }
+            await this.addToWatchlist(stock.symbol, trigger, tradeType, target, sl, 'GANN_9');
         }
     }
 
@@ -499,8 +501,8 @@ export class HeartbeatService {
                             this.logger.debug(`⚠️ SL BREACH DETECTED: [${pos.symbol}] dropped to ₹${ltp} < SL ₹${pos.slPrice}. Starting SL timer.`);
                         } else {
                             const elapsed = Date.now() - pos.slTriggerTime;
-                            const slSustainMs = pos.strategyName === 'EMA_5' ? 60 * 1000 : 5 * 60 * 1000;
-                            const slLabel = pos.strategyName === 'EMA_5' ? '1m' : '5m';
+                            const slSustainMs = pos.strategyName === 'EMA_5' ? 60 * 1000 : pos.strategyName === 'GANN_9' ? 2 * 60 * 1000 : 5 * 60 * 1000;
+                            const slLabel = pos.strategyName === 'EMA_5' ? '1m' : pos.strategyName === 'GANN_9' ? '2m' : '5m';
                             if (elapsed >= slSustainMs) {
                                 this.logger.warn(`🛑 STOP-LOSS HIT: [${pos.symbol}] Sustained below SL ₹${pos.slPrice} for ${slLabel}.`);
                                 await triggerExit(`SL Hit at ₹${ltp} (${slLabel} Sustain)`);
@@ -526,8 +528,8 @@ export class HeartbeatService {
                             this.logger.debug(`⚠️ SL BREACH DETECTED: [${pos.symbol}] rose to ₹${ltp} > SL ₹${pos.slPrice}. Starting SL timer.`);
                         } else {
                             const elapsed = Date.now() - pos.slTriggerTime;
-                            const slSustainMs = pos.strategyName === 'EMA_5' ? 60 * 1000 : 5 * 60 * 1000;
-                            const slLabel = pos.strategyName === 'EMA_5' ? '1m' : '5m';
+                            const slSustainMs = pos.strategyName === 'EMA_5' ? 60 * 1000 : pos.strategyName === 'GANN_9' ? 2 * 60 * 1000 : 5 * 60 * 1000;
+                            const slLabel = pos.strategyName === 'EMA_5' ? '1m' : pos.strategyName === 'GANN_9' ? '2m' : '5m';
                             if (elapsed >= slSustainMs) {
                                 this.logger.warn(`🛑 STOP-LOSS HIT: [${pos.symbol}] Sustained above SL ₹${pos.slPrice} for ${slLabel}.`);
                                 await triggerExit(`SL Hit at ₹${ltp} (${slLabel} Sustain)`);
