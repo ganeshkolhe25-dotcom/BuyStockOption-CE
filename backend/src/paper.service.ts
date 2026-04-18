@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from './prisma.service';
+import { ShoonyaService } from './shoonya.service';
 
 export interface PaperPosition {
     symbol: string;
@@ -30,7 +31,10 @@ export class PaperTradingService implements OnModuleInit {
 
     private activePositions: Map<string, PaperPosition> = new Map();
 
-    constructor(private readonly prisma: PrismaService) { }
+    constructor(
+        private readonly prisma: PrismaService,
+        private readonly shoonyaService: ShoonyaService,
+    ) { }
 
     async getPositions() {
         return this.prisma.tradeHistory.findMany({ where: { status: 'OPEN' } });
@@ -48,15 +52,28 @@ export class PaperTradingService implements OnModuleInit {
             });
 
             if (orphaned.length > 0) {
-                await this.prisma.tradeHistory.updateMany({
-                    where: { id: { in: orphaned.map(t => t.id) } },
-                    data: {
-                        status: 'CLOSED',
-                        exitReason: 'Reconciled: Position open at system restart — exit price unknown.',
-                        exitTime: new Date(),
-                        realizedPnl: null  // null = unknown, distinguishable from an actual zero P&L trade
-                    }
-                });
+                for (const trade of orphaned) {
+                    let exitPrice: number | null = null;
+                    let exitReason = 'Reconciled: Position open at system restart — exit price unknown.';
+
+                    // Attempt live bid price so P&L is meaningful, not null
+                    try {
+                        const quote = await this.shoonyaService.getOptionQuote(trade.token);
+                        if (quote && quote.bidPrice > 0) {
+                            exitPrice = quote.bidPrice;
+                            exitReason = `Reconciled: Closed at live bid ₹${exitPrice} on system restart.`;
+                        }
+                    } catch { /* fall through to null P&L */ }
+
+                    const realizedPnl = exitPrice !== null
+                        ? parseFloat(((exitPrice - trade.entryPrice) * trade.quantity).toFixed(2))
+                        : null;
+
+                    await this.prisma.tradeHistory.update({
+                        where: { id: trade.id },
+                        data: { status: 'CLOSED', exitReason, exitTime: new Date(), exitPrice, realizedPnl }
+                    });
+                }
                 this.logger.warn(`Reconciled ${orphaned.length} orphaned OPEN trade(s) from previous session.`);
             }
         } catch (e) {

@@ -122,8 +122,19 @@ export class ScannerService implements OnModuleInit {
     }
 
     /**
-     * Continuous Gann Angle Structural Scan (NIFTY 100)
-     * Runs every 5 minutes from 9:20 AM to 11:30 AM IST (Mon-Fri)
+     * Gann Angle Momentum Cache Builder — Runs every 5 minutes, 9:20–11:30 AM IST (Mon-Fri)
+     *
+     * Replaces the old "scan + add to watchlist immediately" approach.
+     * Now: fetches all 100 stocks, applies a 4-factor momentum filter, computes Gann Angle
+     * levels for qualifying stocks, and stores them in GANN_ANGLE_LEVELS cache.
+     * The separate 30-second monitorGannAngleLevels cron reads this cache and detects
+     * fresh trigger crossings — eliminating both the 5-minute blind spot and chasing entries.
+     *
+     * 4-Factor Momentum Filter (all derived from the single getMultiQuotes batch call):
+     *   1. pChange     > +1.0% (CE) / < -1.0% (PE)  — meaningful overnight move
+     *   2. openChange  > 0% (CE) / < 0% (PE)         — still moving in the right direction from open
+     *   3. rangePosition > 0.60 (CE) / < 0.40 (PE)   — holding near day's high/low (sustained pressure)
+     *   4. dayRangePct > 0.8%                         — stock is actually moving, not drifting sideways
      */
     @Cron('0 */5 9-11 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async automatedGannAngleScan() {
@@ -131,41 +142,118 @@ export class ScannerService implements OnModuleInit {
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
         if (timeStr < '09:20:00' || timeStr > '11:30:00') return;
 
-        this.logger.log(`⏰ [${timeStr}] Gann Angle Continuous Scan Triggered!`);
-
         const config = await this.prisma.shoonyaConfig.findFirst();
         if (config && !config.gannAngleEnabled) {
-            this.logger.warn('Gann Angle Strategy is DISABLED from settings. Skipping...');
+            this.logger.warn('Gann Angle Strategy is DISABLED from settings. Skipping levels cache build...');
             return;
         }
 
-        // Trade limit is enforced at order placement (placeBuyOrder), not at scan time
-
         try {
             const stocks = await this.nseService.scanNifty100Quotes();
+            const momentumStocks: any[] = [];
 
-            // Skip stocks already traded today under this strategy
-            const todayTraded = await this.paperTrading.getTodayTradedSymbols('GANN_ANGLE');
-
-            let newSignals = 0;
             for (const stock of stocks) {
-                if (todayTraded.includes(stock.symbol)) continue;
+                const ltp       = stock.ltp;
+                const prevClose = stock.prevClose || ltp;
+                const openPrice = stock.openPrice || ltp;
+                const dayHigh   = stock.dayHigh   || ltp;
+                const dayLow    = stock.dayLow    || ltp;
+                const pChange   = stock.pChange   || 0;
 
-                const prevClose = stock.prevClose || (stock.ltp / (1 + (stock.pChange / 100)));
+                const openChange     = openPrice > 0 ? ((ltp - openPrice) / openPrice) * 100 : 0;
+                const dayRangePct    = prevClose  > 0 ? ((dayHigh - dayLow) / prevClose) * 100 : 0;
+                const rangePosition  = (dayHigh - dayLow) > 0 ? (ltp - dayLow) / (dayHigh - dayLow) : 0.5;
+
+                const isCeMomentum = pChange > 1.0 && openChange > 0 && rangePosition > 0.60 && dayRangePct > 0.8;
+                const isPeMomentum = pChange < -1.0 && openChange < 0 && rangePosition < 0.40 && dayRangePct > 0.8;
+
+                if (!isCeMomentum && !isPeMomentum) continue;
+
+                const type   = isCeMomentum ? 'CE' : 'PE';
                 const levels = this.gannAngleService.calculateAngles(prevClose);
-                const signal = this.gannAngleService.generateSignal(stock.ltp, levels);
+                momentumStocks.push({ symbol: stock.symbol, type, levels });
+            }
 
-                if (signal.type === 'CE' && signal.entryTrigger && signal.target && signal.sl) {
-                    await this.heartbeatService.addToWatchlist(stock.symbol, signal.entryTrigger, 'CE', signal.target, signal.sl, 'GANN_ANGLE');
-                    newSignals++;
-                } else if (signal.type === 'PE' && signal.entryTrigger && signal.target && signal.sl) {
-                    await this.heartbeatService.addToWatchlist(stock.symbol, signal.entryTrigger, 'PE', signal.target, signal.sl, 'GANN_ANGLE');
-                    newSignals++;
+            // 30-minute TTL — refreshed every 5 min, no need for a longer window
+            await this.cacheManager.set('GANN_ANGLE_LEVELS', JSON.stringify(momentumStocks), 1800000);
+            this.logger.log(`✅ [${timeStr}] Gann Angle Levels Cache: ${momentumStocks.length}/${stocks.length} high-momentum stocks identified (pChange + openChange + range + volatility filter).`);
+        } catch (error) {
+            this.logger.error(`Gann Angle Level Cache Build Failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * Gann Angle Level Monitor — Runs every 30 seconds, 9:20–11:30 AM IST (Mon-Fri)
+     *
+     * Reads the GANN_ANGLE_LEVELS cache (momentum-filtered stocks) and checks if any
+     * stock's LTP has FRESHLY crossed its Gann 1x1 angle trigger (within 0.5% above for CE,
+     * 0.5% below for PE). When detected, adds to watchlist so the heartbeat can execute
+     * immediately (sustainMs = 0 for GANN_ANGLE). This replaces the 5-minute gap with
+     * 30-second continuous monitoring using the WS tick cache (zero REST cost).
+     */
+    @Cron('*/30 * * * * *')
+    async monitorGannAngleLevels() {
+        if (!this.isMarketHours()) return;
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+        if (timeStr < '09:20:00' || timeStr > '11:30:00') return;
+
+        const cached = await this.cacheManager.get<string>('GANN_ANGLE_LEVELS');
+        if (!cached) return;
+
+        const config = await this.prisma.shoonyaConfig.findFirst();
+        if (config && !config.gannAngleEnabled) return;
+
+        const momentumStocks: any[] = JSON.parse(cached);
+        if (momentumStocks.length === 0) return;
+
+        const todayTraded = await this.paperTrading.getTodayTradedSymbols('GANN_ANGLE');
+        const eligibleSymbols = momentumStocks
+            .map(s => s.symbol)
+            .filter(s => !todayTraded.includes(s));
+        if (eligibleSymbols.length === 0) return;
+
+        const ltpMap = await this.nseService.getBatchLTP(eligibleSymbols);
+
+        // Only fire when LTP freshly crosses the trigger — within 0.5% of angle level.
+        // Beyond 0.5% means the breakout already happened and entry would be chasing.
+        const FRESH_CROSS_PCT = 0.005;
+
+        for (const item of momentumStocks) {
+            if (todayTraded.includes(item.symbol)) continue;
+
+            const ltp = ltpMap[item.symbol];
+            if (!ltp) continue;
+
+            // Skip if already in watchlist (prevents duplicate entries)
+            const existing = await this.cacheManager.get(`WATCHLIST:${item.symbol}`);
+            if (existing) continue;
+
+            const levels = item.levels;
+
+            if (item.type === 'CE') {
+                // Fresh CE cross: LTP just cleared the 1x1_Up angle, still within 0.5% above it
+                const freshCross = ltp >= levels.angle1x1_Up &&
+                                   ltp <= levels.angle1x1_Up * (1 + FRESH_CROSS_PCT);
+                if (freshCross) {
+                    await this.heartbeatService.addToWatchlist(
+                        item.symbol, levels.angle1x1_Up, 'CE',
+                        levels.angle1x2_Up, levels.angle2x1_Up, 'GANN_ANGLE'
+                    );
+                    this.logger.log(`📍 [Gann Angle] CE fresh cross: [${item.symbol}] LTP ₹${ltp} at 1x1_Up ₹${levels.angle1x1_Up} → watchlist`);
+                }
+            } else {
+                // Fresh PE cross: LTP just broke below the 1x1_Dn angle, still within 0.5% below it
+                const freshCross = ltp <= levels.angle1x1_Dn &&
+                                   ltp >= levels.angle1x1_Dn * (1 - FRESH_CROSS_PCT);
+                if (freshCross) {
+                    await this.heartbeatService.addToWatchlist(
+                        item.symbol, levels.angle1x1_Dn, 'PE',
+                        levels.angle1x2_Dn, levels.angle2x1_Dn, 'GANN_ANGLE'
+                    );
+                    this.logger.log(`📍 [Gann Angle] PE fresh cross: [${item.symbol}] LTP ₹${ltp} at 1x1_Dn ₹${levels.angle1x1_Dn} → watchlist`);
                 }
             }
-            this.logger.log(`✅ Gann Angle Scan: ${stocks.length} stocks checked, ${newSignals} new signals, ${todayTraded.length} skipped (already traded today).`);
-        } catch (error) {
-            this.logger.error(`Automated Gann Angle Scan Failed: ${error.message}`);
         }
     }
 

@@ -9,6 +9,8 @@ export interface NSEStock {
     pChange: number;
     prevClose?: number;   // Actual previous close from Shoonya (item.c)
     openPrice?: number;   // Actual day open from Shoonya (item.o)
+    dayHigh?: number;     // Today's high from Shoonya (item.h)
+    dayLow?: number;      // Today's low from Shoonya (item.l)
     adx?: number;
     rsi?: number;
     rdx?: number;
@@ -164,7 +166,9 @@ export class NseService implements OnModuleInit {
                     ltp,
                     pChange: parseFloat(pChange.toFixed(2)),
                     prevClose,
-                    openPrice
+                    openPrice,
+                    dayHigh: parseFloat(item.h) || ltp,
+                    dayLow:  parseFloat(item.l) || ltp,
                 });
             }
         }
