@@ -3,8 +3,9 @@
 set -e
 
 echo "=== Extracting frontend source ==="
-rm -rf /opt/shoonya-frontend
-mkdir -p /opt/shoonya-frontend
+sudo rm -rf /opt/shoonya-frontend
+sudo mkdir -p /opt/shoonya-frontend
+sudo chown maddy:maddy /opt/shoonya-frontend
 tar -xzf /home/maddy/fe-website-deploy.tar.gz -C /opt/shoonya-frontend --strip-components=1
 echo "Extracted OK"
 
