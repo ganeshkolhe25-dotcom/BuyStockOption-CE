@@ -46,15 +46,6 @@ server {
         proxy_read_timeout 120s;
     }
 
-    # Next.js static assets (served under /terminal/_next/ due to basePath)
-    location /terminal/_next/ {
-        proxy_pass http://localhost:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-    }
-
     # Backend API (NestJS on port 3001)
     location /api/ {
         proxy_pass http://localhost:3001/;
