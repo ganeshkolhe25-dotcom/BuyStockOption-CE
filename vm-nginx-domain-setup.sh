@@ -32,8 +32,8 @@ server {
         add_header Cache-Control "public";
     }
 
-    # Trading terminal — Next.js built with basePath=/terminal, so all assets also live under /terminal
-    location /terminal {
+    # ^~ prevents regex locations from intercepting /terminal/_next/*.js assets
+    location ^~ /terminal {
         proxy_pass http://localhost:8080;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
