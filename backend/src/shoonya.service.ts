@@ -68,10 +68,16 @@ export class ShoonyaService implements OnModuleInit {
         } catch { /* DB not ready — sessionToken stays null, authenticate() will handle it */ }
     }
 
+    private configCache: { value: any; expiresAt: number } | null = null;
+
     async getConfig() {
+        const now = Date.now();
+        if (this.configCache && now < this.configCache.expiresAt) {
+            return this.configCache.value;
+        }
         try {
             const dbConfig = await this.prisma.shoonyaConfig.findFirst();
-            return {
+            const value = {
                 uid: dbConfig?.uid || process.env.SHOONYA_UID || '',
                 pwd: dbConfig?.pwd || process.env.SHOONYA_PWD || '',
                 factor2: dbConfig?.factor2 || process.env.SHOONYA_FACTOR2 || '',
@@ -80,6 +86,8 @@ export class ShoonyaService implements OnModuleInit {
                 // @ts-ignore
                 expiryMonth: dbConfig?.expiryMonth || 'AUTO'
             };
+            this.configCache = { value, expiresAt: now + 30_000 };
+            return value;
         } catch {
             return {
                 uid: process.env.SHOONYA_UID || '',

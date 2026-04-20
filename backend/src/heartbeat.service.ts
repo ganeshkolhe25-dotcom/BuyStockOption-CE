@@ -211,20 +211,8 @@ export class HeartbeatService {
      */
     private async executeOptionTrade(symbol: string, cmp: number, type: 'CE' | 'PE', targetPrice: number, slPrice: number, strategyName: string = 'GANN_9') {
         try {
-            let contract = null;
-            let attempts = 0;
-
             const preferITM = strategyName === 'EMA_5'; // ITM = better Delta + less decay for mean-reversion
-            while (!contract && attempts < 3) {
-                contract = await this.shoonyaService.findAtmOption(symbol, cmp, type, preferITM);
-                if (!contract) {
-                    attempts++;
-                    if (attempts < 3) {
-                        this.logger.warn(`Shoonya Option Chain failed for ${symbol}. Retrying attempt ${attempts + 1}/3...`);
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                    }
-                }
-            }
+            const contract = await this.shoonyaService.findAtmOption(symbol, cmp, type, preferITM);
 
             if (!contract) {
                 await this.paperTrading.logFailedTrade(symbol, type, cmp, 'Shoonya API Failure: Could not resolve Option Token after 3 attempts.');

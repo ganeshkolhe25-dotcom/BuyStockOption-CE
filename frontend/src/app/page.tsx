@@ -818,7 +818,7 @@ export default function Home() {
                       </tr>
                     ) : (
                       watchlist?.map((item: any) => {
-                        const sustainMs = item.strategyName === 'GANN_ANGLE' ? 0 : item.strategyName === 'EMA_5' ? 60 * 1000 : 5 * 60 * 1000;
+                        const sustainMs = item.strategyName === 'GANN_ANGLE' ? 0 : item.strategyName === 'EMA_5' ? 60 * 1000 : 3 * 60 * 1000;
                         const sustainMins = sustainMs / 60000;
                         const elapsed = Date.now() - item.breakoutTime;
                         const minsLeft = Math.max(0, sustainMins - (elapsed / 60000)).toFixed(1);
@@ -870,7 +870,7 @@ export default function Home() {
                   <div className="px-4 py-8 text-center text-sm text-neutral-500">No stocks in pending observation queue.</div>
                 ) : (
                   watchlist?.map((item: any) => {
-                    const sustainMs = item.strategyName === 'EMA_5' ? 60 * 1000 : 5 * 60 * 1000;
+                    const sustainMs = item.strategyName === 'GANN_ANGLE' ? 0 : item.strategyName === 'EMA_5' ? 60 * 1000 : 3 * 60 * 1000;
                     const sustainMins = sustainMs / 60000;
                     const elapsed = Date.now() - item.breakoutTime;
                     const minsLeft = Math.max(0, sustainMins - (elapsed / 60000)).toFixed(1);
