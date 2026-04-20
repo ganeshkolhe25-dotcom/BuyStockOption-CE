@@ -582,8 +582,8 @@ export default function Home() {
           >
             <Clock className="w-4 h-4" />
             Pending Watchlist
-            {watchlist?.length > 0 && (
-              <span className="ml-1 bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full text-xs">{watchlist.length}</span>
+            {watchlist?.filter((w: any) => !w.strategyName || w.strategyName === 'GANN_9').length > 0 && (
+              <span className="ml-1 bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full text-xs">{watchlist.filter((w: any) => !w.strategyName || w.strategyName === 'GANN_9').length}</span>
             )}
           </button>
           <button
@@ -817,8 +817,8 @@ export default function Home() {
                         </td>
                       </tr>
                     ) : (
-                      watchlist?.map((item: any) => {
-                        const sustainMs = item.strategyName === 'GANN_ANGLE' ? 0 : item.strategyName === 'EMA_5' ? 60 * 1000 : 3 * 60 * 1000;
+                      watchlist?.filter((item: any) => !item.strategyName || item.strategyName === 'GANN_9').map((item: any) => {
+                        const sustainMs = item.strategyName === 'EMA_5' ? 60 * 1000 : 3 * 60 * 1000;
                         const sustainMins = sustainMs / 60000;
                         const elapsed = Date.now() - item.breakoutTime;
                         const minsLeft = Math.max(0, sustainMins - (elapsed / 60000)).toFixed(1);
@@ -869,8 +869,8 @@ export default function Home() {
                 {watchlist?.length === 0 ? (
                   <div className="px-4 py-8 text-center text-sm text-neutral-500">No stocks in pending observation queue.</div>
                 ) : (
-                  watchlist?.map((item: any) => {
-                    const sustainMs = item.strategyName === 'GANN_ANGLE' ? 0 : item.strategyName === 'EMA_5' ? 60 * 1000 : 3 * 60 * 1000;
+                  watchlist?.filter((item: any) => !item.strategyName || item.strategyName === 'GANN_9').map((item: any) => {
+                    const sustainMs = item.strategyName === 'EMA_5' ? 60 * 1000 : 3 * 60 * 1000;
                     const sustainMins = sustainMs / 60000;
                     const elapsed = Date.now() - item.breakoutTime;
                     const minsLeft = Math.max(0, sustainMins - (elapsed / 60000)).toFixed(1);

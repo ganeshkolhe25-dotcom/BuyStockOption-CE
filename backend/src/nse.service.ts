@@ -204,14 +204,16 @@ export class NseService implements OnModuleInit {
             }
         }
 
-        this.logger.log(`Found ${candidateSymbols.length} candidates in price range. Fetching indicators...`);
-        
+        // Pre-filter: only stocks that moved >= 0.5% qualify for the Gann-9 universe
+        const movers = candidateSymbols.filter(sym => Math.abs(basicDataMap.get(sym).pChange) >= 0.5);
+        this.logger.log(`Found ${candidateSymbols.length} candidates in price range, ${movers.length} with pChange >= 0.5%. Fetching indicators...`);
+
         const finalized: NSEStock[] = [];
-        // Fetch indicators for candidates (limited to top 50 to avoid TPS flood)
-        for (const sym of candidateSymbols.slice(0, 50)) {
-            const indicators = await this.fetchIndicatorsFromShoonya(sym);
+        for (const sym of movers) {
             const basic = basicDataMap.get(sym);
-            if (indicators && (indicators.adx > 25 || Math.abs(basic.pChange) > 2.0)) {
+            const indicators = await this.fetchIndicatorsFromShoonya(sym);
+
+            if (indicators) {
                 finalized.push({
                     symbol: sym,
                     ltp: basic.ltp,
@@ -220,9 +222,15 @@ export class NseService implements OnModuleInit {
                     openPrice: basic.openPrice,
                     ...indicators
                 });
-            } else if (!indicators && Math.abs(basic.pChange) > 2.0) {
-                // Fallback: TPSeries unavailable (Shoonya rate-limit) — use price change alone
-                this.logger.warn(`[Scan] TPSeries unavailable for ${sym} — using price-change fallback (${basic.pChange.toFixed(2)}%)`);
+            } else {
+                // TPSeries unavailable — derive rdx proxy from pChange so the RDX guard
+                // in continuousDailyScanMonitor doesn't block all trades on rate-limited days.
+                // pChange > 1.5% → bullish proxy (CE rdx = 58 > 55 threshold)
+                // pChange < -1.5% → bearish proxy (PE rdx = 42 < 45 threshold)
+                // Otherwise neutral (rdx = 50 → blocked by guard, stock shows in UI but won't trade)
+                const pChange = basic.pChange;
+                const proxyRdx = pChange > 1.5 ? 58 : pChange < -1.5 ? 42 : 50;
+                this.logger.warn(`[Scan] TPSeries unavailable for ${sym} — proxy rdx=${proxyRdx} from pChange ${pChange.toFixed(2)}%`);
                 finalized.push({
                     symbol: sym,
                     ltp: basic.ltp,
@@ -231,11 +239,10 @@ export class NseService implements OnModuleInit {
                     openPrice: basic.openPrice,
                     adx: 0,
                     rsi: 50,
-                    rdx: 0
+                    rdx: proxyRdx
                 });
             }
-            // Throttle indicator fetching
-            await new Promise(res => setTimeout(res, 200));
+            await new Promise(res => setTimeout(res, 150));
         }
 
         return finalized;
