@@ -195,8 +195,8 @@ export class NseService implements OnModuleInit {
                 const openPrice = parseFloat(item.o) || ltp;
                 const pChange = ((ltp - prevClose) / prevClose) * 100;
 
-                // Core Filter: 2000 < LTP < 30000
-                if (ltp >= 2000 && ltp <= 30000) {
+                // Core Filter: 500 < LTP < 30000 (covers all Nifty stocks with liquid options)
+                if (ltp >= 500 && ltp <= 30000) {
                     const symbol = item.tsym.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym;
                     candidateSymbols.push(symbol);
                     basicDataMap.set(symbol, { ltp, pChange, prevClose, openPrice });

@@ -29,11 +29,13 @@ export class ScannerService implements OnModuleInit {
         const cached = await this.cacheManager.get<string>('DAILY_SCAN_RESULTS');
         if (!cached) {
             const now = new Date();
+            const day = now.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'short' });
             const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+            const isWeekday = day !== 'Sat' && day !== 'Sun';
 
             // Intelligent Catch-Up: If the user boots the bot up midway through the active trading day,
             // we actively trigger a retroactive scan instead of forcing them to wait 24 hours.
-            if (timeStr >= '09:20:00' && timeStr <= '15:15:00') {
+            if (isWeekday && timeStr >= '09:20:00' && timeStr <= '15:15:00') {
                 this.logger.warn('Bot started late during active market hours. Triggering catch-up scan now...');
                 setTimeout(() => {
                     this.automatedMorningScan();
