@@ -25,6 +25,19 @@ export default function GannAngle({ isEnabled, portfolio, history, handleSquareO
   const [error, setError] = useState("");
   const [activeInnerTab, setActiveInnerTab] = useState<'analysis' | 'ledger'>('analysis');
 
+  const dailyPnl = (() => {
+    const today = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+    const realized = (history || [])
+      .filter((h: any) => h.strategyName === 'GANN_ANGLE' && h.exitTime &&
+        new Date(h.exitTime).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }) === today &&
+        !(h.exitReason && h.exitReason.includes('Reconciled')))
+      .reduce((sum: number, h: any) => sum + (h.realizedPnl || 0), 0);
+    const open = (portfolio?.positions || [])
+      .filter((p: any) => p.strategyName === 'GANN_ANGLE')
+      .reduce((sum: number, p: any) => sum + (p.currentLtp - p.entryPrice) * p.qty, 0);
+    return realized + open;
+  })();
+
   const handleSearch = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!symbol) return;
@@ -47,7 +60,36 @@ export default function GannAngle({ isEnabled, portfolio, history, handleSquareO
 
   return (
     <div className="space-y-6 animate-in fade-in zoom-in-95 duration-500">
-      
+
+      {/* Header with strategy info + daily PNL */}
+      <div className="bg-gradient-to-r from-indigo-400/10 via-purple-500/10 to-transparent border border-indigo-500/20 rounded-2xl p-6">
+        <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
+          <div>
+            <h2 className="text-2xl font-bold bg-gradient-to-r from-indigo-400 to-purple-400 bg-clip-text text-transparent flex items-center gap-3">
+              <TrendingUp className="w-7 h-7 text-indigo-500" />
+              Gann Angle Momentum
+            </h2>
+            <p className="text-sm text-neutral-400 mt-1">1x1 geometric angle breakout on NIFTY 100. Active 9:20 – 11:30 AM. Limit buy at mid-price, immediate execution.</p>
+          </div>
+          <div className="flex gap-3">
+            <div className="bg-neutral-900 border border-neutral-800 px-4 py-2 rounded-xl text-center">
+              <div className="text-[10px] text-neutral-500 uppercase font-bold tracking-wider">Window</div>
+              <div className="text-indigo-400 font-mono font-bold text-sm">9:20–11:30</div>
+            </div>
+            <div className="bg-neutral-900 border border-neutral-800 px-4 py-2 rounded-xl text-center">
+              <div className="text-[10px] text-neutral-500 uppercase font-bold tracking-wider">Sustain</div>
+              <div className="text-purple-400 font-mono font-bold text-sm">Immediate</div>
+            </div>
+            <div className={`border px-4 py-2 rounded-xl text-center ${dailyPnl >= 0 ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-rose-500/10 border-rose-500/20'}`}>
+              <div className="text-[10px] text-neutral-500 uppercase font-bold tracking-wider">Today&apos;s P&L</div>
+              <div className={`font-mono font-bold ${dailyPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                {dailyPnl >= 0 ? '+' : ''}₹{dailyPnl.toFixed(2)}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="flex gap-2 border-b border-neutral-800 pb-2">
          <button 
             onClick={() => setActiveInnerTab('analysis')}

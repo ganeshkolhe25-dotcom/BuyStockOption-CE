@@ -7,6 +7,19 @@ import { Activity, TrendingUp, TrendingDown, Crosshair, BarChart2, List } from "
 export default function Ema5Strategy({ isEnabled, portfolio, history }: { isEnabled?: boolean, portfolio?: any, history?: any[] }) {
   const [squaringOff, setSquaringOff] = useState<string | null>(null);
 
+  const dailyPnl = (() => {
+    const today = new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' });
+    const realized = (history || [])
+      .filter((h: any) => h.strategyName === 'EMA_5' && h.exitTime &&
+        new Date(h.exitTime).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }) === today &&
+        !(h.exitReason && h.exitReason.includes('Reconciled')))
+      .reduce((sum: number, h: any) => sum + (h.realizedPnl || 0), 0);
+    const open = (portfolio?.positions || [])
+      .filter((p: any) => p.strategyName === 'EMA_5')
+      .reduce((sum: number, p: any) => sum + (p.currentLtp - p.entryPrice) * p.qty, 0);
+    return realized + open;
+  })();
+
   const handleSquareOff = async (token: string) => {
     try {
       setSquaringOff(token);
@@ -57,6 +70,12 @@ export default function Ema5Strategy({ isEnabled, portfolio, history }: { isEnab
              <div className="bg-neutral-900 border border-neutral-800 px-4 py-2 rounded-xl text-center">
                  <div className="text-[10px] text-neutral-500 uppercase font-bold tracking-wider">Trail SL</div>
                  <div className="text-sky-400 font-mono font-bold">@ 1:2</div>
+             </div>
+             <div className={`border px-4 py-2 rounded-xl text-center ${dailyPnl >= 0 ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-rose-500/10 border-rose-500/20'}`}>
+                 <div className="text-[10px] text-neutral-500 uppercase font-bold tracking-wider">Today&apos;s P&L</div>
+                 <div className={`font-mono font-bold ${dailyPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                   {dailyPnl >= 0 ? '+' : ''}₹{dailyPnl.toFixed(2)}
+                 </div>
              </div>
           </div>
         </div>
