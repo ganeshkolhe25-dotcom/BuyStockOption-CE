@@ -947,8 +947,26 @@ export class ShoonyaService implements OnModuleInit {
                     if (response.data.stat === 'Ok' && response.data.lp) {
                         return response.data;
                     }
+                    // Session expired — re-authenticate and retry once
+                    if (response.data.emsg?.includes('Session Expired') || response.data.stat === 'Not_Ok') {
+                        this.logger.warn(`[GetQuotes] Session expired for token ${token}. Re-authenticating...`);
+                        this.sessionToken = null;
+                        await this.autoConnect();
+                        if (!this.sessionToken) return null;
+                        const retryPayload = `jData=${JSON.stringify({ uid: config.uid, exch: exchange, token })}&jKey=${this.sessionToken}`;
+                        const retry = await axios.post(`${this.endpoint}/GetQuotes`, retryPayload, {
+                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                            timeout: 5000
+                        });
+                        return (retry.data.stat === 'Ok' && retry.data.lp) ? retry.data : null;
+                    }
                     return null;
-                } catch {
+                } catch (err: any) {
+                    if (err.response?.status === 401) {
+                        this.logger.warn(`[GetQuotes] 401 for token ${token}. Re-authenticating...`);
+                        this.sessionToken = null;
+                        await this.autoConnect();
+                    }
                     return null;
                 }
             }));
