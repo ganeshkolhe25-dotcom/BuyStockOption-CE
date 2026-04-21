@@ -154,6 +154,9 @@ export class ScannerService implements OnModuleInit {
                 const dayRangePct    = prevClose  > 0 ? ((dayHigh - dayLow) / prevClose) * 100 : 0;
                 const rangePosition  = (dayHigh - dayLow) > 0 ? (ltp - dayLow) / (dayHigh - dayLow) : 0.5;
 
+                // Price filter: options must be liquid and tradeable
+                if (ltp < 500 || ltp > 40000) continue;
+
                 const isCeMomentum = pChange > 1.0 && openChange > 0 && rangePosition > 0.60 && dayRangePct > 0.8;
                 const isPeMomentum = pChange < -1.0 && openChange < 0 && rangePosition < 0.40 && dayRangePct > 0.8;
 
