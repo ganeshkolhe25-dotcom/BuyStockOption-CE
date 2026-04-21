@@ -54,72 +54,60 @@ export class ScannerService implements OnModuleInit {
         this.logger.log('⏰ 9:20 AM Auto-Scan Triggered!');
 
         const config = await this.prisma.shoonyaConfig.findFirst();
-        if (config && !config.gann9Enabled) {
-            this.logger.warn('Gann Square-9 Strategy is DISABLED directly from settings. Skipping background scan...');
-            return;
+
+        // ── Gann-9 scan ────────────────────────────────────────────────────────
+        if (!config || config.gann9Enabled) {
+            try {
+                const stocks = await this.nseService.scanGainersLosers();
+                const processed = [];
+
+                for (const stock of stocks) {
+                    const pctChange = stock.pChange || 0;
+                    const prevClose = stock.prevClose || (stock.ltp / (1 + pctChange / 100));
+                    const levels = this.gannService.calculateLevels(prevClose);
+                    const snapshotStatus = this.gannService.evaluateTradeTriggers(stock.ltp, levels);
+
+                    processed.push({
+                        ...stock,
+                        openLtp: stock.openPrice || stock.ltp,
+                        prevClose,
+                        levels,
+                        snapshotStatus,
+                    });
+                }
+
+                await this.cacheManager.set('DAILY_SCAN_RESULTS', JSON.stringify({
+                    status: 'success',
+                    count: processed.length,
+                    data: processed,
+                }), 43200000);
+
+                this.logger.log(`✅ Gann-9 Morning Scan Complete. Stored ${processed.length} Nifty 200 Setups.`);
+
+                try {
+                    await this.nseService.connectTickFeed();
+                    this.nseService.subscribeForLiveFeed(processed.map((s: any) => s.symbol));
+                } catch (wsErr: any) {
+                    this.logger.warn(`[WS] Tick feed subscription failed — REST fallback active: ${wsErr.message}`);
+                }
+            } catch (error) {
+                this.logger.error(`Gann-9 Morning Scan Failed: ${error.message}`);
+            }
+        } else {
+            this.logger.warn('Gann Square-9 is DISABLED from settings. Skipping Gann-9 scan.');
         }
 
-        // Trade limit is enforced at order placement (placeBuyOrder), not at scan time
-
-        try {
-            const stocks = await this.nseService.scanGainersLosers();
-            const processed = [];
-
-            for (const stock of stocks) {
-                // Use the actual previous close from Shoonya (item.c). Fall back to
-                // the pChange-derived estimate only if the field is missing.
-                const pctChange = stock.pChange || 0;
-                const prevClose = stock.prevClose || (stock.ltp / (1 + pctChange / 100));
-
-                const levels = this.gannService.calculateLevels(prevClose);
-
-                /* 
-                // Gap-Up/Gap-Down Filter: Exclude if stock opened beyond R1 + 50% of squareRoot, or below S1 - 50% of squareRoot
-                const maxCeBoundary = levels.R1 + (levels.squareRoot / 2);
-                const maxPeBoundary = levels.S1 - (levels.squareRoot / 2);
-
-                if (stock.ltp > maxCeBoundary || stock.ltp < maxPeBoundary) {
-                    this.logger.debug(`[${stock.symbol}] Gapped beyond safely tradable boundary (> 50% of sqrt). Skipping...`);
-                    continue;
-                }
-                */
-
-                const snapshotStatus = this.gannService.evaluateTradeTriggers(stock.ltp, levels);
-
-                // We let continuousDailyScanMonitor inside heartbeat.service.ts manage additions
-                // so that openLtp boundaries and reversal logics are strictly enforced.
-
-                processed.push({
-                    ...stock,
-                    // Use actual day open from Shoonya (item.o) so gap-up/gap-down detection
-                    // is based on the real 9:15 AM opening price, not the 9:20 AM scan price.
-                    openLtp: stock.openPrice || stock.ltp,
-                    prevClose,
-                    levels,
-                    snapshotStatus,
-                });
-            }
-
-            // Cache the result for the frontend to consume throughout the day
-            await this.cacheManager.set('DAILY_SCAN_RESULTS', JSON.stringify({
-                status: 'success',
-                count: processed.length,
-                data: processed,
-            }), 43200000); // 12 hours TTL
-
-            this.logger.log(`✅ Morning Scan Complete. Stored ${processed.length} Nifty 200 Setups.`);
-
-            // ── Subscribe all scanned symbols to WS tick feed ──────────────────
-            // After this, getBatchLTP() reads from the in-memory tick cache
-            // instead of calling REST for every 15-second syncLiveScannerPrices poll.
+        // ── 5 EMA morning universe build (runs regardless of Gann-9 toggle) ──
+        if (!config || config.ema5Enabled) {
             try {
-                await this.nseService.connectTickFeed();
-                this.nseService.subscribeForLiveFeed(processed.map((s: any) => s.symbol));
-            } catch (wsErr: any) {
-                this.logger.warn(`[WS] Tick feed subscription failed — REST fallback active: ${wsErr.message}`);
+                const universe = await this.nseService.buildEma5Universe();
+                await this.cacheManager.set('EMA5_UNIVERSE', JSON.stringify(universe), 43200000);
+                this.logger.log(`✅ 5 EMA Universe cached: ${universe.length} stocks (Nifty 100, ₹500–₹40,000, ADX ≥ 18).`);
+            } catch (err: any) {
+                this.logger.warn(`[5 EMA] Universe build failed — will fall back to static list: ${err.message}`);
             }
-        } catch (error) {
-            this.logger.error(`Automated Scan Failed: ${error.message}`);
+        } else {
+            this.logger.warn('5 EMA is DISABLED from settings. Skipping EMA universe build.');
         }
     }
 
@@ -288,7 +276,14 @@ export class ScannerService implements OnModuleInit {
         // Trade limit is enforced at order placement (placeBuyOrder), not at scan time
 
         try {
-            const stocks = await this.nseService.scanEma5mUniverse();
+            const universeStr = await this.cacheManager.get<string>('EMA5_UNIVERSE');
+            const universe: string[] | undefined = universeStr ? JSON.parse(universeStr) : undefined;
+            if (universe) {
+                this.logger.log(`[5 EMA] Using morning universe: ${universe.length} ADX-filtered stocks.`);
+            } else {
+                this.logger.warn('[5 EMA] No morning universe cached — falling back to static VOLATILE_NIFTY100 list.');
+            }
+            const stocks = await this.nseService.scanEma5mUniverse(universe);
             const todayTraded = await this.paperTrading.getTodayTradedSymbols('EMA_5');
 
             // 1. New signal detection

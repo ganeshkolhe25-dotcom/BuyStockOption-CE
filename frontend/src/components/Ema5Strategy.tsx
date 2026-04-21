@@ -92,7 +92,7 @@ export default function Ema5Strategy({ isEnabled, portfolio, history }: { isEnab
          <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 relative overflow-hidden text-center py-10">
              <Activity className="w-16 h-16 text-amber-500/20 mx-auto mb-4" />
              <h2 className="text-lg font-bold text-white mb-2">Automated 5-Minute Scan Running</h2>
-             <p className="text-sm text-neutral-400 max-w-lg mx-auto">Scans 53 volatile Nifty 100 stocks via Shoonya live candles every 5 minutes. Looks for a 2-candle Alert + Activation pattern where price reverses sharply back toward the 5 EMA.</p>
+             <p className="text-sm text-neutral-400 max-w-lg mx-auto">Scans all Nifty 100 stocks filtered at 9:20 AM by price (₹500–₹40,000) and ADX ≥ 18 (trending). Every 5 minutes, fetches live candles for qualifying stocks and looks for a 2-candle Alert + Activation pattern where price reverses sharply back toward the 5 EMA.</p>
              <div className="mt-6 flex flex-wrap justify-center gap-3">
                   <span className="flex items-center gap-2 text-xs font-bold px-3 py-1 bg-neutral-800 rounded-full text-neutral-400"><TrendingDown className="w-3 h-3 text-rose-500" /> PE: Alert fully above EMA → Act breaks Low</span>
                   <span className="flex items-center gap-2 text-xs font-bold px-3 py-1 bg-neutral-800 rounded-full text-neutral-400"><TrendingUp className="w-3 h-3 text-emerald-500" /> CE: Alert fully below EMA → Act breaks High</span>
@@ -101,6 +101,7 @@ export default function Ema5Strategy({ isEnabled, portfolio, history }: { isEnab
                   <span className="flex items-center gap-2 text-xs px-3 py-1 bg-amber-500/10 border border-amber-500/20 rounded-full text-amber-400/80">⏰ 09:30 – 11:00 AM</span>
                   <span className="flex items-center gap-2 text-xs px-3 py-1 bg-amber-500/10 border border-amber-500/20 rounded-full text-amber-400/80">⏰ 01:30 – 03:00 PM</span>
                   <span className="flex items-center gap-2 text-xs px-3 py-1 bg-sky-500/10 border border-sky-500/20 rounded-full text-sky-400/80">ITM Strike — Better Delta</span>
+                  <span className="flex items-center gap-2 text-xs px-3 py-1 bg-indigo-500/10 border border-indigo-500/20 rounded-full text-indigo-400/80">🔍 ADX ≥ 18 · RSI filter at signal · Volume surge</span>
              </div>
          </div>
 

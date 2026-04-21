@@ -283,14 +283,51 @@ export class NseService implements OnModuleInit {
     }
 
     /**
-     * 5 EMA Mean-Reversion Universe Scan — volatile Nifty 100 stocks, 5-min candles
-     * Provides open/high/low/close/volume for Alert+Activation candle logic.
+     * Morning universe builder for 5 EMA.
+     * Scans all Nifty 100 stocks, applies price filter (₹500–₹40,000) then daily ADX ≥ 18.
+     * Called once at 9:20 AM; result cached as EMA5_UNIVERSE for the rest of the day.
      */
-    async scanEma5mUniverse(): Promise<NSE15mData[]> {
-        this.logger.log('Fetching 5-min Shoonya Candles for EMA mean-reversion strategy...');
+    async buildEma5Universe(): Promise<string[]> {
+        this.logger.log('[5 EMA] Building morning universe from Nifty 100 (price + ADX filter)...');
+
+        const tokens = NIFTY_100_BASKET.map(sym => this.tokenMap.get(sym)).filter(Boolean) as string[];
+        const quotes = await this.shoonya.getMultiQuotes('NSE', tokens);
+
+        const priceFiltered: string[] = [];
+        for (const item of quotes) {
+            if (!item.lp || !item.tsym) continue;
+            const ltp = parseFloat(item.lp);
+            if (ltp >= 500 && ltp <= 40000) {
+                const sym = item.tsym.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym;
+                priceFiltered.push(sym);
+            }
+        }
+
+        this.logger.log(`[5 EMA] ${priceFiltered.length}/${NIFTY_100_BASKET.length} pass price filter (₹500–₹40,000). Fetching daily ADX...`);
+
+        const universe: string[] = [];
+        for (const sym of priceFiltered) {
+            const indicators = await this.fetchIndicatorsFromShoonya(sym);
+            if (indicators && indicators.adx >= 18) {
+                universe.push(sym);
+            }
+            await new Promise(res => setTimeout(res, 150));
+        }
+
+        this.logger.log(`[5 EMA] Universe ready: ${universe.length} trending stocks (ADX ≥ 18) from Nifty 100.`);
+        return universe;
+    }
+
+    /**
+     * 5 EMA Mean-Reversion Universe Scan — fetches 5-min candles for the given symbol list.
+     * Uses the ADX-filtered morning universe when provided; falls back to VOLATILE_NIFTY100.
+     */
+    async scanEma5mUniverse(symbols?: string[]): Promise<NSE15mData[]> {
+        const targetSymbols = symbols ?? VOLATILE_NIFTY100;
+        this.logger.log(`Fetching 5-min Shoonya Candles for ${targetSymbols.length} EMA universe stocks...`);
         const processed: NSE15mData[] = [];
 
-        for (const sym of VOLATILE_NIFTY100) {
+        for (const sym of targetSymbols) {
             const token = this.tokenMap.get(sym);
             if (!token) continue;
 
@@ -308,7 +345,7 @@ export class NseService implements OnModuleInit {
             await new Promise(res => setTimeout(res, 100));
         }
 
-        this.logger.log(`5-min EMA scan: fetched candles for ${processed.length}/${VOLATILE_NIFTY100.length} volatile stocks.`);
+        this.logger.log(`5-min EMA scan: fetched candles for ${processed.length}/${targetSymbols.length} stocks.`);
         return processed;
     }
 
