@@ -35,13 +35,13 @@ export class ScannerService implements OnModuleInit {
 
             // Intelligent Catch-Up: If the user boots the bot up midway through the active trading day,
             // we actively trigger a retroactive scan instead of forcing them to wait 24 hours.
-            if (isWeekday && timeStr >= '09:20:00' && timeStr <= '15:15:00') {
+            if (isWeekday && timeStr >= '09:25:00' && timeStr <= '15:15:00') {
                 this.logger.warn('Bot started late during active market hours. Triggering catch-up scan now...');
                 setTimeout(() => {
                     this.automatedMorningScan();
                 }, 5000);
             } else {
-                this.logger.log('No cached scan results found on startup. Waiting for exactly 9:20 AM IST to run initial market scan.');
+                this.logger.log('No cached scan results found on startup. Waiting for 9:25 AM IST to run initial market scan.');
             }
         }
     }
@@ -49,9 +49,9 @@ export class ScannerService implements OnModuleInit {
     /**
      * Fully Automated Daily Scan at 9:20 AM IST (Monday - Friday)
      */
-    @Cron('20 09 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    @Cron('25 09 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async automatedMorningScan() {
-        this.logger.log('⏰ 9:20 AM Auto-Scan Triggered!');
+        this.logger.log('⏰ 9:25 AM Auto-Scan Triggered!');
 
         const config = await this.prisma.shoonyaConfig.findFirst();
 
