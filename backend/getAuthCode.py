@@ -20,7 +20,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import InvalidSessionIdException, WebDriverException
+from selenium.common.exceptions import InvalidSessionIdException, WebDriverException, StaleElementReferenceException
 from urllib.parse import urlparse, parse_qs
 
 # ── Credentials from env vars (injected by NestJS autoConnect) ────────────────
@@ -242,14 +242,39 @@ try:
                 print(f"[DEBUG] Found direct token after auth code!", flush=True)
             break
 
+        # Periodically check localStorage too (some flows store token there early)
+        if (time.time() - start) % 10 < 0.6:
+            ls_token = get_token_from_localstorage(driver)
+            if ls_token:
+                direct_token = ls_token
+                break
+
         if time.time() - start > 60:
             new_otp = pyotp.TOTP(TOTP_KEY).now()
             if new_otp != otp:
-                fast_fill(visible_inputs[2], new_otp)
-                wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='LOGIN']"))).click()
-                start = time.time()
-                otp = new_otp
-                continue
+                # Only re-fill if still on the login page (URL unchanged)
+                try:
+                    current_url = driver.current_url
+                    if "investor-entry-level/login" in current_url:
+                        all_inp = driver.find_elements(By.CSS_SELECTOR, "input:not([type='hidden']):not([type='checkbox']):not([type='radio'])")
+                        vis_inp = [i for i in all_inp if i.is_displayed()]
+                        if len(vis_inp) >= 3:
+                            fast_fill(vis_inp[2], new_otp)
+                            wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='LOGIN']"))).click()
+                            start = time.time()
+                            otp = new_otp
+                            continue
+                        else:
+                            print("[DEBUG] Timeout: page navigated, inputs gone — checking localStorage once more.", flush=True)
+                    else:
+                        print(f"[DEBUG] Timeout: page navigated to {current_url[:80]} — checking localStorage.", flush=True)
+                except Exception as nav_err:
+                    print(f"[DEBUG] Timeout: error re-filling OTP ({nav_err}) — checking localStorage.", flush=True)
+                # Page navigated — one more localStorage attempt before giving up
+                ls_token = get_token_from_localstorage(driver)
+                if ls_token:
+                    direct_token = ls_token
+                    break
             print("[DEBUG] Timeout: could not capture token or auth code.", flush=True)
             break
         time.sleep(0.5)
