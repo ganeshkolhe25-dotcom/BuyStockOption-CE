@@ -412,11 +412,11 @@ export class ScannerService implements OnModuleInit {
         // Phase 1: detect new setups (stops fetching once all symbols have a setup)
         await this.candleBreakout.scanForSetups();
 
-        // Phase 2: check breakouts on PENDING setups using live LTP
+        // Phase 2: check breakouts on PENDING setups — fetch LTP from Shoonya directly (index tokens)
         const pending = this.candleBreakout.getSetups().filter(s => s.signal === 'PENDING');
         if (pending.length === 0) return;
 
-        const ltpMap = await this.nseService.getBatchLTP(pending.map(s => s.symbol));
+        const ltpMap = await this.candleBreakout.fetchLtpMap();
         const triggered = this.candleBreakout.checkBreakouts(ltpMap);
 
         for (const setup of triggered) {

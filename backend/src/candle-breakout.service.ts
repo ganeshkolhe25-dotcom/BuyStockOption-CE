@@ -1,6 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ShoonyaService } from './shoonya.service';
-import { NseService } from './nse.service';
 
 export interface OneMinCandle {
     time: number;     // unix seconds (ssboe from Shoonya)
@@ -25,6 +24,12 @@ export interface CandleSetup {
     entrySlPrice?: number;       // underlying SL for exit (rangeLow for CE, rangeHigh for PE)
 }
 
+// Only NIFTY and BANKNIFTY — fixed Shoonya NSE tokens
+const INSTRUMENTS = [
+    { symbol: 'NIFTY',     token: '26000' },
+    { symbol: 'BANKNIFTY', token: '26009' },
+];
+
 @Injectable()
 export class CandleBreakoutService {
     private readonly logger = new Logger(CandleBreakoutService.name);
@@ -32,38 +37,40 @@ export class CandleBreakoutService {
     // Per-symbol detected 2-candle setup
     private readonly setups = new Map<string, CandleSetup>();
 
-    constructor(
-        private readonly shoonya: ShoonyaService,
-        private readonly nseService: NseService,
-    ) {}
+    constructor(private readonly shoonya: ShoonyaService) {}
 
     /**
-     * Scan all resolved NSE symbols for their 2-candle morning setup.
+     * Scan NIFTY and BANKNIFTY for their 2-candle morning setup.
      * Called every minute by the scanner (9:18–11:30 AM IST).
      * Skips symbols that already have a setup found.
      */
     async scanForSetups(): Promise<void> {
-        const allSymbols = this.nseService.getResolvedSymbols();
-        if (allSymbols.length === 0) return;
-
-        // Filter to stocks not yet set up and in a tradeable price range
-        const pending = allSymbols.filter(sym => !this.setups.has(sym));
+        const pending = INSTRUMENTS.filter(i => !this.setups.has(i.symbol));
         if (pending.length === 0) return;
 
         const openTs = this.getMarketOpenTs();
-        this.logger.debug(`[2-Candle] Scanning ${pending.length} symbols for setup...`);
+        this.logger.debug(`[2-Candle] Scanning ${pending.map(i => i.symbol).join(', ')} for setup...`);
 
-        // Batch in groups of 5 with 400 ms delay to respect API rate limits
-        for (let i = 0; i < pending.length; i += 5) {
-            const batch = pending.slice(i, i + 5);
-            await Promise.all(batch.map(sym => this.detectSetup(sym, openTs)));
-            if (i + 5 < pending.length) {
-                await new Promise(r => setTimeout(r, 400));
-            }
+        await Promise.all(pending.map(i => this.detectSetup(i.symbol, i.token, openTs)));
+
+        const found = INSTRUMENTS.filter(i => this.setups.has(i.symbol)).length;
+        this.logger.debug(`[2-Candle] ${found}/${INSTRUMENTS.length} setups found.`);
+    }
+
+    /**
+     * Fetch current LTP for all PENDING setups directly from Shoonya.
+     * Returns a map of symbol → ltp.
+     */
+    async fetchLtpMap(): Promise<Record<string, number>> {
+        const ltpMap: Record<string, number> = {};
+        for (const inst of INSTRUMENTS) {
+            if (!this.setups.has(inst.symbol)) continue;
+            const setup = this.setups.get(inst.symbol)!;
+            if (setup.signal !== 'PENDING') continue;
+            const quote = await this.shoonya.getOptionQuote(inst.token);
+            if (quote && quote.ltp) ltpMap[inst.symbol] = quote.ltp;
         }
-
-        const found = allSymbols.filter(sym => this.setups.has(sym)).length;
-        this.logger.debug(`[2-Candle] ${found}/${allSymbols.length} setups found so far.`);
+        return ltpMap;
     }
 
     /**
@@ -121,12 +128,9 @@ export class CandleBreakoutService {
 
     // ── Private helpers ─────────────────────────────────────────────────────
 
-    private async detectSetup(symbol: string, openTs: number): Promise<void> {
+    private async detectSetup(symbol: string, token: string, openTs: number): Promise<void> {
         try {
-            const token = this.nseService.getToken(symbol);
-            if (!token) return;
-
-            // Fetch today's 1-minute candles (daysLimit=1 to include today, filter by openTs)
+            // Fetch today's 1-minute candles
             const series = await this.shoonya.getTimePriceSeries('NSE', token, '1', 1);
             if (!Array.isArray(series) || series.length < 3) return;
 
@@ -157,11 +161,11 @@ export class CandleBreakoutService {
                 // XOR: exactly one must be green, one must be red
                 if (c1.isGreen === c2.isGreen) continue;
 
-                // Skip if range is too small (<0.1%) or too large (>3%) — noise / gap
+                // Skip if range is too small (<0.1%) or too large (>2%) — noise / gap
                 const rangeHigh = Math.max(c1.high, c2.high);
                 const rangeLow = Math.min(c1.low, c2.low);
                 const rangePct = ((rangeHigh - rangeLow) / rangeLow) * 100;
-                if (rangePct < 0.1 || rangePct > 3.0) continue;
+                if (rangePct < 0.1 || rangePct > 2.0) continue;
 
                 this.setups.set(symbol, {
                     symbol,
