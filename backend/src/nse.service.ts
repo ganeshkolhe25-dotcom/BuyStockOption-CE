@@ -389,8 +389,10 @@ export class NseService implements OnModuleInit {
             return null;
         }
 
-        const stats = await this.shoonya.getOptionQuote(token); // Works for Equity too
-        return stats?.ltp || null;
+        // Must use NSE exchange for equity tokens — getOptionQuote hardcodes NFO and would return null
+        const results = await this.shoonya.getMultiQuotes('NSE', [token]);
+        const lp = results[0]?.lp;
+        return lp ? parseFloat(lp) : null;
     }
 
     /**
