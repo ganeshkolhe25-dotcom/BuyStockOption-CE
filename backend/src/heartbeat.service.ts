@@ -341,32 +341,32 @@ export class HeartbeatService {
             // 1. GAP DOWN REVERSAL (CE): opened below S1, now crossing back above S1
             if (openLtp < levels.S1 && freshCE(ltp, levels.S1)) {
                 tradeType = 'CE'; trigger = levels.S1;
-                target = levels.previousClose; sl = levels.S2;
+                target = levels.previousClose; sl = levels.S1;
             }
             // 2. GAP UP REVERSAL (PE): opened above R1, now crossing back below R1
             else if (openLtp > levels.R1 && freshPE(ltp, levels.R1)) {
                 tradeType = 'PE'; trigger = levels.R1;
-                target = levels.previousClose; sl = levels.R2;
+                target = levels.previousClose; sl = levels.R1;
             }
             // 3. GAP UP R2 CROSSOVER (CE): opened between R1–R2, now crossing above R2
             else if (openLtp > levels.R1 && openLtp <= levels.R2 && freshCE(ltp, levels.R2)) {
                 tradeType = 'CE'; trigger = levels.R2;
-                target = levels.R3; sl = levels.R1;
+                target = levels.R3; sl = levels.R2;
             }
             // 4. GAP DOWN S2 CROSSDOWN (PE): opened between S1–S2, now crossing below S2
             else if (openLtp < levels.S1 && openLtp >= levels.S2 && freshPE(ltp, levels.S2)) {
                 tradeType = 'PE'; trigger = levels.S2;
-                target = levels.S3; sl = levels.S1;
+                target = levels.S3; sl = levels.S2;
             }
             // 5. STANDARD BREAKOUT (CE): opened below R1, now crossing above R1
             else if (openLtp <= levels.R1 && freshCE(ltp, levels.R1)) {
                 tradeType = 'CE'; trigger = levels.R1;
-                target = levels.R2; sl = levels.previousClose;
+                target = levels.R2; sl = levels.R1;
             }
             // 6. STANDARD BREAKDOWN (PE): opened above S1, now crossing below S1
             else if (openLtp >= levels.S1 && freshPE(ltp, levels.S1)) {
                 tradeType = 'PE'; trigger = levels.S1;
-                target = levels.S2; sl = levels.previousClose;
+                target = levels.S2; sl = levels.S1;
             }
 
             if (!tradeType || !trigger) continue;
@@ -483,14 +483,17 @@ export class HeartbeatService {
                         this.logger.warn(`🎯 TARGET HIT: [${pos.symbol}] Underlying reached ₹${ltp} >= Target ₹${pos.targetPrice}`);
                         await triggerExit(`Target Hit at ₹${ltp}`);
                     } else if (ltp < pos.slPrice) {
-                        if (!pos.slTriggerTime) {
+                        if (pos.strategyName === 'GANN_ANGLE') {
+                            this.logger.warn(`🛑 GANN ANGLE BROKEN: [${pos.symbol}] ₹${ltp} < SL ₹${pos.slPrice}. Exiting immediately.`);
+                            await triggerExit(`Angle Broken at ₹${ltp}`);
+                        } else if (!pos.slTriggerTime) {
                             const now = Date.now();
                             this.paperTrading.updatePositionSLTrigger(pos.token, now);
                             this.logger.debug(`⚠️ SL BREACH DETECTED: [${pos.symbol}] dropped to ₹${ltp} < SL ₹${pos.slPrice}. Starting SL timer.`);
                         } else {
                             const elapsed = Date.now() - pos.slTriggerTime;
-                            const slSustainMs = pos.strategyName === 'EMA_5' ? 60 * 1000 : pos.strategyName === 'GANN_9' ? 2 * 60 * 1000 : 5 * 60 * 1000;
-                            const slLabel = pos.strategyName === 'EMA_5' ? '1m' : pos.strategyName === 'GANN_9' ? '2m' : '5m';
+                            const slSustainMs = pos.strategyName === 'EMA_5' ? 60 * 1000 : pos.strategyName === 'GANN_9' ? 3 * 60 * 1000 : 5 * 60 * 1000;
+                            const slLabel = pos.strategyName === 'EMA_5' ? '1m' : pos.strategyName === 'GANN_9' ? '3m' : '5m';
                             if (elapsed >= slSustainMs) {
                                 this.logger.warn(`🛑 STOP-LOSS HIT: [${pos.symbol}] Sustained below SL ₹${pos.slPrice} for ${slLabel}.`);
                                 await triggerExit(`SL Hit at ₹${ltp} (${slLabel} Sustain)`);
@@ -510,14 +513,17 @@ export class HeartbeatService {
                         this.logger.warn(`🎯 TARGET HIT: [${pos.symbol}] Underlying reached ₹${ltp} <= Target ₹${pos.targetPrice}`);
                         await triggerExit(`Target Hit at ₹${ltp}`);
                     } else if (ltp > pos.slPrice) {
-                        if (!pos.slTriggerTime) {
+                        if (pos.strategyName === 'GANN_ANGLE') {
+                            this.logger.warn(`🛑 GANN ANGLE BROKEN: [${pos.symbol}] ₹${ltp} > SL ₹${pos.slPrice}. Exiting immediately.`);
+                            await triggerExit(`Angle Broken at ₹${ltp}`);
+                        } else if (!pos.slTriggerTime) {
                             const now = Date.now();
                             this.paperTrading.updatePositionSLTrigger(pos.token, now);
                             this.logger.debug(`⚠️ SL BREACH DETECTED: [${pos.symbol}] rose to ₹${ltp} > SL ₹${pos.slPrice}. Starting SL timer.`);
                         } else {
                             const elapsed = Date.now() - pos.slTriggerTime;
-                            const slSustainMs = pos.strategyName === 'EMA_5' ? 60 * 1000 : pos.strategyName === 'GANN_9' ? 2 * 60 * 1000 : 5 * 60 * 1000;
-                            const slLabel = pos.strategyName === 'EMA_5' ? '1m' : pos.strategyName === 'GANN_9' ? '2m' : '5m';
+                            const slSustainMs = pos.strategyName === 'EMA_5' ? 60 * 1000 : pos.strategyName === 'GANN_9' ? 3 * 60 * 1000 : 5 * 60 * 1000;
+                            const slLabel = pos.strategyName === 'EMA_5' ? '1m' : pos.strategyName === 'GANN_9' ? '3m' : '5m';
                             if (elapsed >= slSustainMs) {
                                 this.logger.warn(`🛑 STOP-LOSS HIT: [${pos.symbol}] Sustained above SL ₹${pos.slPrice} for ${slLabel}.`);
                                 await triggerExit(`SL Hit at ₹${ltp} (${slLabel} Sustain)`);
