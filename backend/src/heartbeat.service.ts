@@ -73,19 +73,20 @@ export class HeartbeatService {
             return;
         }
 
-        // Skip if symbol already has an open position (any strategy) — prevents cross-strategy duplicates
+        // Skip if symbol already has an open position in the SAME strategy — no intra-strategy duplicates
+        // Different strategies can trade the same symbol independently if their own criteria is met
         const openPositions = await this.paperTrading.getPositions();
-        if (openPositions.some(p => p.symbol === symbol)) {
-            this.logger.debug(`[${symbol}] Already has an open position. Skipping watchlist addition.`);
+        if (openPositions.some(p => p.symbol === symbol && p.strategyName === strategyName)) {
+            this.logger.debug(`[${symbol}] Already has an open ${strategyName} position. Skipping.`);
             return;
         }
 
-        // Skip if a pending limit buy is already in-flight for this symbol (same-strategy duplicate window)
-        // This covers the gap between watchlist removal and limit order fill (up to 2 min for GANN_ANGLE)
+        // Skip if a pending limit buy is already in-flight for this symbol in the SAME strategy
+        // Covers the gap between watchlist removal and limit order fill (up to 2 min for GANN_ANGLE)
         const hasPendingBuy = Array.from(this.pendingLimitOrders.values())
-            .some(o => o.symbol === symbol && o.orderType === 'BUY');
+            .some(o => o.symbol === symbol && o.orderType === 'BUY' && o.strategyName === strategyName);
         if (hasPendingBuy) {
-            this.logger.debug(`[${symbol}] Pending limit buy already in-flight. Skipping.`);
+            this.logger.debug(`[${symbol}] Pending ${strategyName} limit buy already in-flight. Skipping.`);
             return;
         }
 
