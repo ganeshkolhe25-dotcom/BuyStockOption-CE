@@ -100,26 +100,25 @@ export class PaperTradingService implements OnModuleInit {
         }
     }
 
+    // In-memory log of rejected/failed signals — not persisted to DB
+    private readonly failLog: Array<{ symbol: string; type: string; reason: string; time: string }> = [];
+
     /**
-     * Store failed trades into the Ledger directly (e.g. Broken API, Missing Options)
+     * Log a rejected/failed signal in-memory only. Does NOT write to DB.
+     * DB history only contains real executed trades.
      */
-    async logFailedTrade(symbol: string, type: string, triggerPrice: number, reason: string, strategyName?: string) {
-        await this.prisma.tradeHistory.create({
-            data: {
-                symbol,
-                token: "FAILED",
-                type: type as "CE" | "PE",
-                quantity: 0,
-                entryPrice: triggerPrice,
-                status: 'REJECTED',   // REJECTED is excluded from isTradingHaltedForDay count
-                isPaperTrade: true,
-                exitReason: reason,
-                exitTime: new Date(),
-                realizedPnl: 0,
-                strategyName: strategyName || 'UNKNOWN'
-            }
+    logFailedTrade(symbol: string, type: string, triggerPrice: number, reason: string, strategyName?: string) {
+        this.logger.warn(`[${symbol}] ${type} rejected: ${reason}`);
+        this.failLog.push({
+            symbol, type, reason,
+            time: new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }),
         });
-        this.logger.error(`Trade Rejected for [${symbol}] ${type}. Reason: ${reason}`);
+        // Keep only the last 200 entries to avoid unbounded growth
+        if (this.failLog.length > 200) this.failLog.splice(0, this.failLog.length - 200);
+    }
+
+    getFailLog() {
+        return [...this.failLog];
     }
 
     /**
@@ -128,7 +127,7 @@ export class PaperTradingService implements OnModuleInit {
     async placeBuyOrder(symbol: string, token: string, tradingSymbol: string, type: 'CE' | 'PE', qty: number, price: number, targetPrice?: number, slPrice?: number, strategyName?: string) {
         if (this.isTradingHalted) {
             const msg = `Market Close: Universal exit triggered. No new orders.`;
-            await this.logFailedTrade(symbol, type, price, msg, strategyName);
+            this.logFailedTrade(symbol, type, price, msg, strategyName);
             this.logger.warn(`TRADE REJECTED: ${msg}`);
             return false;
         }
@@ -136,7 +135,7 @@ export class PaperTradingService implements OnModuleInit {
         // Enforce per-day trade count limits at order placement (not at scan time)
         if (await this.isTradingHaltedForDay(strategyName)) {
             const msg = `Daily trade limit reached for ${strategyName || 'overall'}. Signal missed.`;
-            await this.logFailedTrade(symbol, type, price, msg, strategyName);
+            this.logFailedTrade(symbol, type, price, msg, strategyName);
             this.logger.warn(`TRADE REJECTED: ${msg} [${symbol}]`);
             return false;
         }
@@ -154,7 +153,7 @@ export class PaperTradingService implements OnModuleInit {
             const MAX_CONCURRENT = 3;
             if (openCountForStrategy >= MAX_CONCURRENT) {
                 const msg = `STRATEGY REJECT: ${strategyName} already has ${openCountForStrategy} open positions (max ${MAX_CONCURRENT} concurrent).`;
-                await this.logFailedTrade(symbol, type, price, msg);
+                this.logFailedTrade(symbol, type, price, msg);
                 this.logger.warn(msg);
                 return false;
             }
@@ -162,7 +161,7 @@ export class PaperTradingService implements OnModuleInit {
 
         if (requiredMargin > summary.availableFunds) {
             const errorMsg = `PAPER REJECTED: Insufficient Funds. Need ₹${requiredMargin.toFixed(2)}, Available: ₹${summary.availableFunds.toFixed(2)}`;
-            await this.logFailedTrade(symbol, type, price, errorMsg);
+            this.logFailedTrade(symbol, type, price, errorMsg);
             this.logger.error(errorMsg);
             return false;
         }
@@ -302,7 +301,8 @@ export class PaperTradingService implements OnModuleInit {
 
         const filter: any = {
             entryTime: { gte: startOfDay },
-            isPaperTrade: true
+            isPaperTrade: true,
+            token: { not: 'FAILED' }, // exclude old junk records
         };
 
         if (strategyName) {

@@ -40,6 +40,8 @@ export class HeartbeatService {
     private dailyTradesCount = 0;
     private lastHeartbeatTime = new Date().toISOString();
     private pendingLimitOrders = new Map<string, PendingLimitOrder>();
+    // Symbols where option token resolution permanently failed today — skip on next attempt
+    private readonly fnoExcluded = new Set<string>();
 
     constructor(
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
@@ -64,6 +66,20 @@ export class HeartbeatService {
     async addToWatchlist(symbol: string, triggerPrice: number, type: 'CE' | 'PE', targetPrice: number, slPrice: number, strategyName: string = 'GANN_9') {
         // NOTE: Do NOT check trade limits here — watchlist is observation only.
         // The limit is enforced at order placement time in executeOptionTrade().
+
+        // Skip symbols where option token resolution failed earlier today
+        if (this.fnoExcluded.has(symbol)) {
+            this.logger.debug(`[${symbol}] Not F&O tradeable (excluded today). Skipping.`);
+            return;
+        }
+
+        // Skip if symbol already has an open position (any strategy) — prevents cross-strategy duplicates
+        const openPositions = await this.paperTrading.getPositions();
+        if (openPositions.some(p => p.symbol === symbol)) {
+            this.logger.debug(`[${symbol}] Already has an open position. Skipping watchlist addition.`);
+            return;
+        }
+
         const key = `WATCHLIST:${symbol}`;
         const existing = await this.cacheManager.get(key);
 
@@ -161,7 +177,7 @@ export class HeartbeatService {
                 if (!isSustaining && !isGann9) {
                     const invalidMsg = `Signal Invalidated: LTP ₹${ltp} moved away from ${entry.type} trigger ₹${entry.triggerPrice} during sustain period.`;
                     this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
-                    await this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
+                    this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
                     await this.cacheManager.del(key);
                     updatedKeys = updatedKeys.filter(k => k !== key);
                     continue;
@@ -178,7 +194,7 @@ export class HeartbeatService {
                     if (!isSustaining) {
                         const invalidMsg = `Signal Invalidated at 3-min check: LTP ₹${ltp} not sustaining ${entry.type} trigger ₹${entry.triggerPrice}.`;
                         this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
-                        await this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
+                        this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
                         await this.cacheManager.del(key);
                         updatedKeys = updatedKeys.filter(k => k !== key);
                         continue;
@@ -216,7 +232,8 @@ export class HeartbeatService {
             const contract = await this.shoonyaService.findAtmOption(symbol, cmp, type, preferITM);
 
             if (!contract) {
-                await this.paperTrading.logFailedTrade(symbol, type, cmp, 'Shoonya API Failure: Could not resolve Option Token after 3 attempts.');
+                this.fnoExcluded.add(symbol); // don't retry this symbol today
+                this.logger.warn(`[${symbol}] No F&O option found — excluded from today's trading.`);
                 return;
             }
 
@@ -224,7 +241,7 @@ export class HeartbeatService {
             const optionPremiumInfo = await this.shoonyaService.getOptionQuote(contract.token);
 
             if (!optionPremiumInfo || optionPremiumInfo.askPrice === 0) {
-                await this.paperTrading.logFailedTrade(symbol, type, cmp, `Shoonya API Failure: Live premium query failed for ${contract.token}.`);
+                this.paperTrading.logFailedTrade(symbol, type, cmp, `Shoonya API Failure: Live premium query failed for ${contract.token}.`);
                 return;
             }
 
@@ -235,7 +252,7 @@ export class HeartbeatService {
                 const lotValue = contract.lotSize * midPrice;
                 if (lotValue > 40000) {
                     const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Mid: ₹${midPrice}, Qty: ${contract.lotSize})`;
-                    await this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
+                    this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
                     this.logger.warn(failMsg);
                     return;
                 }
@@ -256,7 +273,7 @@ export class HeartbeatService {
             const lotValue = contract.lotSize * optionPremiumInfo.askPrice;
             if (lotValue > 40000) {
                 const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Price: ₹${optionPremiumInfo.askPrice}, Qty: ${contract.lotSize})`;
-                await this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
+                this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
                 this.logger.warn(failMsg);
                 return;
             }
@@ -583,7 +600,7 @@ export class HeartbeatService {
                     toDelete.push(key);
 
                 } else if (elapsed >= TWO_MIN_MS) {
-                    await this.paperTrading.logFailedTrade(
+                    this.paperTrading.logFailedTrade(
                         order.symbol, order.type, order.midPrice,
                         `GANN_ANGLE Limit Buy expired: LTP ₹${currentLtp} did not reach mid ₹${order.midPrice} within 2 minutes. Order discarded.`
                     );
