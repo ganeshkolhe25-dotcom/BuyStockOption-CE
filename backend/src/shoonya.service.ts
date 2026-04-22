@@ -302,7 +302,13 @@ export class ShoonyaService implements OnModuleInit {
             this.logger.log('✅ Daily token refresh succeeded. Triggering NSE token resolution...');
         } else {
             this.logger.warn(`⚠️ autoConnect failed (${result.message}). Falling back to QuickAuth...`);
-            await this.authenticate(); // QuickAuth as last-resort fallback
+            // Wipe the stale DB token so authenticate() falls through to QuickAuth
+            // (otherwise it loads yesterday's expired token and returns true without re-authing)
+            try {
+                const cfg = await this.prisma.shoonyaConfig.findFirst();
+                if (cfg) await this.prisma.shoonyaConfig.update({ where: { id: cfg.id }, data: { sessionToken: '' } });
+            } catch { /* non-fatal */ }
+            await this.authenticate();
         }
         // Fire the NseService token refresh immediately after getting a fresh session
         // (rather than waiting for the 9:10 AM cron, which is a safety-net fallback)
