@@ -97,13 +97,13 @@ export class Ema5Service {
         const actHigh = highs[activateIdx];
         const actLow  = lows[activateIdx];
 
-        // ── PE Setup: alert candle fully above EMA ────────────────────────────
-        if (alertLow > emaAtAlert && alertHigh > emaAtAlert) {
+        // ── PE Setup: alert candle CLOSES above EMA (wick may cross — close is the signal) ──
+        if (alertClose > emaAtAlert) {
             if (actLow < alertLow) {
-                // Secondary confirmation: RSI < 45 (bearish momentum) + volume surge
-                if (latestRsi !== null && latestRsi >= 45) {
+                // RSI > 60 confirms price is overbought/overstretched above EMA
+                if (latestRsi !== null && latestRsi < 60) {
                     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
-                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be <45 for PE` };
+                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be >60 for PE (overbought)` };
                 }
                 if (!volumeSurge) {
                     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
@@ -125,13 +125,13 @@ export class Ema5Service {
             }
         }
 
-        // ── CE Setup: alert candle fully below EMA ────────────────────────────
-        if (alertHigh < emaAtAlert && alertLow < emaAtAlert) {
+        // ── CE Setup: alert candle CLOSES below EMA (wick may cross — close is the signal) ──
+        if (alertClose < emaAtAlert) {
             if (actHigh > alertHigh) {
-                // Secondary confirmation: RSI > 55 (bullish momentum) + volume surge
-                if (latestRsi !== null && latestRsi <= 55) {
+                // RSI < 40 confirms price is oversold/overstretched below EMA
+                if (latestRsi !== null && latestRsi > 40) {
                     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
-                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be >55 for CE` };
+                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be <40 for CE (oversold)` };
                 }
                 if (!volumeSurge) {
                     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,

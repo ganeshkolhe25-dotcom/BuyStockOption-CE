@@ -15,25 +15,26 @@ export default function Dashboard({ portfolio, history, shoonyaConfig, handleTog
   // Gann Square-9
   const gann9Active = portfolio?.positions?.filter((p: any) => !p.strategyName || p.strategyName === 'GANN_9') || [];
   const gann9Unrealized = gann9Active.reduce((acc: number, curr: any) => acc + ((curr.currentLtp - curr.entryPrice) * curr.qty), 0);
-  const gann9DayRealized = history?.filter((h: any) => (!h.strategyName || h.strategyName === 'GANN_9') && isToday(h.exitTime)).reduce((acc: number, curr: any) => acc + (curr.realizedPnl || 0), 0) || 0;
+  const notReconciled = (h: any) => !(h.exitReason && h.exitReason.includes('Reconciled'));
+  const gann9DayRealized = history?.filter((h: any) => (!h.strategyName || h.strategyName === 'GANN_9') && isToday(h.exitTime) && notReconciled(h)).reduce((acc: number, curr: any) => acc + (curr.realizedPnl || 0), 0) || 0;
   const gann9DayPnl = gann9DayRealized + gann9Unrealized;
-  const gann9CumulativePnl = (history?.filter((h: any) => (!h.strategyName || h.strategyName === 'GANN_9')).reduce((acc: number, curr: any) => acc + (curr.realizedPnl || 0), 0) || 0) + gann9Unrealized;
+  const gann9CumulativePnl = (history?.filter((h: any) => (!h.strategyName || h.strategyName === 'GANN_9') && notReconciled(h)).reduce((acc: number, curr: any) => acc + (curr.realizedPnl || 0), 0) || 0) + gann9Unrealized;
   const gann9Used = gann9Active.reduce((acc: number, curr: any) => acc + (curr.entryPrice * curr.qty), 0) || 0;
 
   // Gann Angle
   const gannAngleActive = portfolio?.positions?.filter((p: any) => p.strategyName === 'GANN_ANGLE') || [];
   const gannAngleUnrealized = gannAngleActive.reduce((acc: number, curr: any) => acc + ((curr.currentLtp - curr.entryPrice) * curr.qty), 0);
-  const gannAngleDayRealized = history?.filter((h: any) => h.strategyName === 'GANN_ANGLE' && isToday(h.exitTime)).reduce((acc: number, curr: any) => acc + (curr.realizedPnl || 0), 0) || 0;
+  const gannAngleDayRealized = history?.filter((h: any) => h.strategyName === 'GANN_ANGLE' && isToday(h.exitTime) && notReconciled(h)).reduce((acc: number, curr: any) => acc + (curr.realizedPnl || 0), 0) || 0;
   const gannAngleDayPnl = gannAngleDayRealized + gannAngleUnrealized;
-  const gannAngleCumulativePnl = (history?.filter((h: any) => h.strategyName === 'GANN_ANGLE').reduce((acc: number, curr: any) => acc + (curr.realizedPnl || 0), 0) || 0) + gannAngleUnrealized;
+  const gannAngleCumulativePnl = (history?.filter((h: any) => h.strategyName === 'GANN_ANGLE' && notReconciled(h)).reduce((acc: number, curr: any) => acc + (curr.realizedPnl || 0), 0) || 0) + gannAngleUnrealized;
   const gannAngleUsed = gannAngleActive.reduce((acc: number, curr: any) => acc + (curr.entryPrice * curr.qty), 0) || 0;
 
   // 5 EMA
   const ema5Active = portfolio?.positions?.filter((p: any) => p.strategyName === 'EMA_5') || [];
   const emaUnrealized = ema5Active.reduce((acc: number, curr: any) => acc + ((curr.currentLtp - curr.entryPrice) * curr.qty), 0);
-  const ema5DayRealized = history?.filter((h: any) => h.strategyName === 'EMA_5' && isToday(h.exitTime)).reduce((acc: number, curr: any) => acc + (curr.realizedPnl || 0), 0) || 0;
+  const ema5DayRealized = history?.filter((h: any) => h.strategyName === 'EMA_5' && isToday(h.exitTime) && notReconciled(h)).reduce((acc: number, curr: any) => acc + (curr.realizedPnl || 0), 0) || 0;
   const ema5DayPnl = ema5DayRealized + emaUnrealized;
-  const ema5CumulativePnl = (history?.filter((h: any) => h.strategyName === 'EMA_5').reduce((acc: number, curr: any) => acc + (curr.realizedPnl || 0), 0) || 0) + emaUnrealized;
+  const ema5CumulativePnl = (history?.filter((h: any) => h.strategyName === 'EMA_5' && notReconciled(h)).reduce((acc: number, curr: any) => acc + (curr.realizedPnl || 0), 0) || 0) + emaUnrealized;
   const ema5Used = ema5Active.reduce((acc: number, curr: any) => acc + (curr.entryPrice * curr.qty), 0) || 0;
 
   return (

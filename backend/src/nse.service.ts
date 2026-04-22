@@ -291,6 +291,38 @@ export class NseService implements OnModuleInit {
     }
 
     /**
+     * 5 EMA CE Universe Scan — fetches 15-min candles for the given symbol list.
+     * Used by the 15-min CE cron to detect buy setups per the original 5 EMA strategy
+     * (video: buy setups on 15-min chart, sell setups on 5-min chart).
+     */
+    async scanEma5_15mUniverse(symbols?: string[]): Promise<NSE15mData[]> {
+        const targetSymbols = symbols ?? VOLATILE_NIFTY100;
+        this.logger.log(`Fetching 15-min Shoonya Candles for ${targetSymbols.length} EMA universe stocks (CE scan)...`);
+        const processed: NSE15mData[] = [];
+
+        for (const sym of targetSymbols) {
+            const token = this.tokenMap.get(sym);
+            if (!token) continue;
+
+            // 3 days ensures enough 15-min candles for EMA(5) to stabilize
+            const candles = await this.shoonya.getTimePriceSeries('NSE', token, '15', 3);
+            if (candles.length > 10) {
+                const closes  = candles.map(c => parseFloat(c.intc)).reverse();
+                const highs   = candles.map(c => parseFloat(c.inth)).reverse();
+                const lows    = candles.map(c => parseFloat(c.intl)).reverse();
+                const opens   = candles.map(c => parseFloat(c.into)).reverse();
+                const volumes = candles.map(c => parseFloat(c.v)).reverse();
+
+                processed.push({ symbol: sym, closes, highs, lows, opens, volumes });
+            }
+            await new Promise(res => setTimeout(res, 100));
+        }
+
+        this.logger.log(`15-min EMA CE scan: fetched candles for ${processed.length}/${targetSymbols.length} stocks.`);
+        return processed;
+    }
+
+    /**
      * Morning universe builder for 5 EMA.
      * Scans all Nifty 100 stocks, applies price filter (₹500–₹40,000) then daily ADX ≥ 18.
      * Called once at 9:20 AM; result cached as EMA5_UNIVERSE for the rest of the day.

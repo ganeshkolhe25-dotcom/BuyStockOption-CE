@@ -253,8 +253,9 @@ export class ScannerService implements OnModuleInit {
     }
 
     /**
-     * Automated 5 EMA Mean-Reversion Strategy on Volatile NIFTY 100
-     * Runs 5 seconds after every 5-minute candle close (Alert+Activation confirmation).
+     * Automated 5 EMA PE (Sell) Strategy — 5-min candles, per original strategy video.
+     * Only detects PE signals. CE signals come from the separate 15-min cron below.
+     * Runs 5 seconds after every 5-minute candle close.
      */
     @Cron('5 */5 9-15 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async automatedEma5Scan() {
@@ -266,11 +267,11 @@ export class ScannerService implements OnModuleInit {
         const inMorningWindow   = timeStr >= '09:30:00' && timeStr <= '11:05:00';
         const inAfternoonWindow = timeStr >= '13:30:00' && timeStr <= '15:05:00';
         if (!inMorningWindow && !inAfternoonWindow) {
-            this.logger.debug(`5 EMA: Outside active windows (${timeStr}). Skipping mid-day.`);
+            this.logger.debug(`5 EMA PE: Outside active windows (${timeStr}). Skipping.`);
             return;
         }
 
-        this.logger.log(`⏰ ${timeStr} 5 EMA Strategy Scan Triggered!`);
+        this.logger.log(`⏰ ${timeStr} 5 EMA PE Scan (5-min) Triggered!`);
 
         const config = await this.prisma.shoonyaConfig.findFirst();
         if (config && !config.ema5Enabled) {
@@ -278,40 +279,38 @@ export class ScannerService implements OnModuleInit {
             return;
         }
 
-        // Trade limit is enforced at order placement (placeBuyOrder), not at scan time
-
         try {
             const universeStr = await this.cacheManager.get<string>('EMA5_UNIVERSE');
             const universe: string[] | undefined = universeStr ? JSON.parse(universeStr) : undefined;
             if (universe) {
-                this.logger.log(`[5 EMA] Using morning universe: ${universe.length} ADX-filtered stocks.`);
+                this.logger.log(`[5 EMA PE] Using morning universe: ${universe.length} ADX-filtered stocks.`);
             } else {
-                this.logger.warn('[5 EMA] No morning universe cached — falling back to static VOLATILE_NIFTY100 list.');
+                this.logger.warn('[5 EMA PE] No morning universe cached — falling back to static VOLATILE_NIFTY100 list.');
             }
             const stocks = await this.nseService.scanEma5mUniverse(universe);
             const todayTraded = await this.paperTrading.getTodayTradedSymbols('EMA_5');
 
-            // 1. New signal detection
+            // PE signal detection only (CE handled by 15-min cron)
             let matches = 0;
             for (const stock of stocks) {
                 if (todayTraded.includes(stock.symbol)) continue;
 
                 const signal = this.ema5Service.analyzeData(stock);
 
-                if (signal.type === 'CE' || signal.type === 'PE') {
+                if (signal.type === 'PE') {
                     matches++;
                     await this.heartbeatService.addToWatchlist(
-                        stock.symbol, signal.entry, signal.type,
+                        stock.symbol, signal.entry, 'PE',
                         signal.target, signal.sl, 'EMA_5'
                     );
                 }
             }
 
-            // 2. EMA Touch Exit: flag open EMA_5 positions whose stock closed past the 5 EMA
+            // EMA Touch Exit for PE positions: exit when 5-min close crosses above 5 EMA
             const summary = await this.paperTrading.getPortfolioSummary();
-            const ema5Positions = summary.positions.filter(p => p.strategyName === 'EMA_5');
+            const pePositions = summary.positions.filter(p => p.strategyName === 'EMA_5' && p.type === 'PE');
             let exitFlags = 0;
-            for (const pos of ema5Positions) {
+            for (const pos of pePositions) {
                 const stockData = stocks.find(s => s.symbol === pos.symbol);
                 if (!stockData) continue;
 
@@ -319,21 +318,85 @@ export class ScannerService implements OnModuleInit {
                 if (!currentEma) continue;
 
                 const lastClose = stockData.closes[stockData.closes.length - 1];
-                // CE reversal trade exits when price closes BELOW EMA (trend resumed down)
-                // PE reversal trade exits when price closes ABOVE EMA (trend resumed up)
-                const touchExit = (pos.type === 'CE' && lastClose < currentEma) ||
-                                  (pos.type === 'PE' && lastClose > currentEma);
-
-                if (touchExit) {
+                if (lastClose > currentEma) {
                     exitFlags++;
-                    await this.cacheManager.set(`EMA5_EXIT:${pos.symbol}`, '1', 90000); // 90s TTL
-                    this.logger.warn(`📉 EMA TOUCH EXIT FLAGGED: [${pos.symbol}] Close ₹${lastClose} crossed 5 EMA ₹${currentEma.toFixed(2)}`);
+                    await this.cacheManager.set(`EMA5_EXIT:${pos.symbol}`, '1', 90000);
+                    this.logger.warn(`📉 EMA PE EXIT FLAGGED: [${pos.symbol}] Close ₹${lastClose} crossed above 5 EMA ₹${currentEma.toFixed(2)}`);
                 }
             }
 
-            this.logger.log(`✅ 5 EMA Scan: ${stocks.length} stocks | ${matches} new setups | ${exitFlags} exit flags.`);
+            this.logger.log(`✅ 5 EMA PE Scan (5-min): ${stocks.length} stocks | ${matches} PE setups | ${exitFlags} exit flags.`);
         } catch (error) {
-            this.logger.error(`Automated 5 EMA Scan Failed: ${error.message}`);
+            this.logger.error(`Automated 5 EMA PE Scan Failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * Automated 5 EMA CE (Buy) Strategy — 15-min candles, per original strategy video.
+     * Only detects CE signals. Runs 5 seconds after every 15-min candle close.
+     * Active windows: 9:30–11:05 AM and 1:30–3:05 PM IST.
+     */
+    @Cron('5 */15 9-15 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    async automatedEma5_15mCeScan() {
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+
+        const inMorningWindow   = timeStr >= '09:30:00' && timeStr <= '11:05:00';
+        const inAfternoonWindow = timeStr >= '13:30:00' && timeStr <= '15:05:00';
+        if (!inMorningWindow && !inAfternoonWindow) {
+            this.logger.debug(`5 EMA CE: Outside active windows (${timeStr}). Skipping.`);
+            return;
+        }
+
+        this.logger.log(`⏰ ${timeStr} 5 EMA CE Scan (15-min) Triggered!`);
+
+        const config = await this.prisma.shoonyaConfig.findFirst();
+        if (config && !config.ema5Enabled) return;
+
+        try {
+            const universeStr = await this.cacheManager.get<string>('EMA5_UNIVERSE');
+            const universe: string[] | undefined = universeStr ? JSON.parse(universeStr) : undefined;
+            const stocks = await this.nseService.scanEma5_15mUniverse(universe);
+            const todayTraded = await this.paperTrading.getTodayTradedSymbols('EMA_5');
+
+            // CE signal detection only (PE handled by 5-min cron)
+            let matches = 0;
+            for (const stock of stocks) {
+                if (todayTraded.includes(stock.symbol)) continue;
+
+                const signal = this.ema5Service.analyzeData(stock);
+
+                if (signal.type === 'CE') {
+                    matches++;
+                    await this.heartbeatService.addToWatchlist(
+                        stock.symbol, signal.entry, 'CE',
+                        signal.target, signal.sl, 'EMA_5'
+                    );
+                }
+            }
+
+            // EMA Touch Exit for CE positions: exit when 15-min close crosses below 5 EMA
+            const summary = await this.paperTrading.getPortfolioSummary();
+            const cePositions = summary.positions.filter(p => p.strategyName === 'EMA_5' && p.type === 'CE');
+            let exitFlags = 0;
+            for (const pos of cePositions) {
+                const stockData = stocks.find(s => s.symbol === pos.symbol);
+                if (!stockData) continue;
+
+                const currentEma = this.ema5Service.getCurrentEma(stockData.closes);
+                if (!currentEma) continue;
+
+                const lastClose = stockData.closes[stockData.closes.length - 1];
+                if (lastClose < currentEma) {
+                    exitFlags++;
+                    await this.cacheManager.set(`EMA5_EXIT:${pos.symbol}`, '1', 90000);
+                    this.logger.warn(`📈 EMA CE EXIT FLAGGED: [${pos.symbol}] Close ₹${lastClose} crossed below 5 EMA ₹${currentEma.toFixed(2)} (15-min)`);
+                }
+            }
+
+            this.logger.log(`✅ 5 EMA CE Scan (15-min): ${stocks.length} stocks | ${matches} CE setups | ${exitFlags} exit flags.`);
+        } catch (error) {
+            this.logger.error(`Automated 5 EMA CE Scan (15-min) Failed: ${error.message}`);
         }
     }
 
