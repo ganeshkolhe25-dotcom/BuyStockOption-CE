@@ -80,6 +80,15 @@ export class HeartbeatService {
             return;
         }
 
+        // Skip if a pending limit buy is already in-flight for this symbol (same-strategy duplicate window)
+        // This covers the gap between watchlist removal and limit order fill (up to 2 min for GANN_ANGLE)
+        const hasPendingBuy = Array.from(this.pendingLimitOrders.values())
+            .some(o => o.symbol === symbol && o.orderType === 'BUY');
+        if (hasPendingBuy) {
+            this.logger.debug(`[${symbol}] Pending limit buy already in-flight. Skipping.`);
+            return;
+        }
+
         const key = `WATCHLIST:${symbol}`;
         const existing = await this.cacheManager.get(key);
 
