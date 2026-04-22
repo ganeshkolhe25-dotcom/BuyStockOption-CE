@@ -88,24 +88,22 @@ export class CandleBreakoutService {
             const buffer = setup.rangeHigh * 0.001; // 0.1% buffer to avoid noise
 
             if (ltp > setup.rangeHigh + buffer) {
-                const range = setup.rangeHigh - setup.rangeLow;
                 setup.signal = 'CE';
                 setup.breakoutPrice = ltp;
                 setup.breakoutAt = Date.now();
-                setup.entryTargetPrice = parseFloat((setup.rangeHigh + range).toFixed(2));
-                setup.entrySlPrice = parseFloat(setup.rangeLow.toFixed(2));
+                setup.entryTargetPrice = parseFloat((ltp + 35).toFixed(2));  // fixed 35-pt target
+                setup.entrySlPrice = parseFloat(setup.rangeLow.toFixed(2));  // SL = range low
                 triggered.push(setup);
                 this.logger.log(
                     `📈 2-CANDLE CE: [${symbol}] ₹${ltp} > range high ₹${setup.rangeHigh.toFixed(2)} ` +
                     `→ Target ₹${setup.entryTargetPrice} | SL ₹${setup.entrySlPrice}`
                 );
             } else if (ltp < setup.rangeLow - buffer) {
-                const range = setup.rangeHigh - setup.rangeLow;
                 setup.signal = 'PE';
                 setup.breakoutPrice = ltp;
                 setup.breakoutAt = Date.now();
-                setup.entryTargetPrice = parseFloat((setup.rangeLow - range).toFixed(2));
-                setup.entrySlPrice = parseFloat(setup.rangeHigh.toFixed(2));
+                setup.entryTargetPrice = parseFloat((ltp - 35).toFixed(2));  // fixed 35-pt target
+                setup.entrySlPrice = parseFloat(setup.rangeHigh.toFixed(2)); // SL = range high
                 triggered.push(setup);
                 this.logger.log(
                     `📉 2-CANDLE PE: [${symbol}] ₹${ltp} < range low ₹${setup.rangeLow.toFixed(2)} ` +
