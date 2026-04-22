@@ -6,6 +6,7 @@ import { Activity, AlertCircle, TrendingUp, TrendingDown, Target, Shield, Clock,
 import DashboardTab from "@/components/DashboardTab";
 import GannAngle from "@/components/GannAngle";
 import Ema5Strategy from "@/components/Ema5Strategy";
+import CandleBreakout from "@/components/CandleBreakout";
 
 interface StockData {
   symbol: string;
@@ -46,7 +47,7 @@ export default function Home() {
   const [history, setHistory] = useState<any[]>([]);
   const [watchlist, setWatchlist] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'scanner' | 'watchlist' | 'positions' | 'history'>('scanner');
-  const [mainTab, setMainTab] = useState<'dashboard' | 'gann9' | 'gannAngle' | 'ema5' | 'shoonya'>('dashboard');
+  const [mainTab, setMainTab] = useState<'dashboard' | 'gann9' | 'gannAngle' | 'ema5' | 'candleBreakout' | 'shoonya'>('dashboard');
   const [shoonyaConfig, setShoonyaConfig] = useState<any>({ uid: '', pwd: '', factor2: '', vc: '', appkey: '', secretCode: '', webPwd: '', expiryMonth: 'APR', initialFunds: 100000, gann9MaxTrades: 5, gannAngleMaxTrades: 5, ema5MaxTrades: 5, gann9MaxLoss: -10000, gannAngleMaxLoss: -10000, ema5MaxLoss: -10000, gann9MaxProfit: 10000, gannAngleMaxProfit: 10000, ema5MaxProfit: 10000, gann9Enabled: true, gannAngleEnabled: false, ema5Enabled: false });
   const [shoonyaStatus, setShoonyaStatus] = useState<string | null>(null);
   const [isTesting, setIsTesting] = useState(false);
@@ -448,11 +449,18 @@ export default function Home() {
             <Triangle className="w-5 h-5 flex-shrink-0" /> Gann Angle
           </button>
           
-          <button 
-            onClick={() => setMainTab('ema5')} 
+          <button
+            onClick={() => setMainTab('ema5')}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${mainTab === 'ema5' ? 'bg-amber-500/10 text-amber-400 shadow-[inset_2px_0_0_0_#f59e0b]' : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'}`}
           >
             <Activity className="w-5 h-5 flex-shrink-0" /> 5 EMA Mean Rev
+          </button>
+
+          <button
+            onClick={() => setMainTab('candleBreakout')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${mainTab === 'candleBreakout' ? 'bg-orange-500/10 text-orange-400 shadow-[inset_2px_0_0_0_#f97316]' : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'}`}
+          >
+            <Activity className="w-5 h-5 flex-shrink-0" /> 2-Candle Breakout
           </button>
 
         </nav>
@@ -495,6 +503,10 @@ export default function Home() {
              <Activity className="w-5 h-5" />
              <span className="text-[9px] font-bold">5 EMA</span>
            </button>
+           <button onClick={() => setMainTab('candleBreakout')} className={`flex-1 flex flex-col items-center gap-1 ${mainTab === 'candleBreakout' ? 'text-orange-400' : 'text-neutral-500'}`}>
+             <Activity className="w-5 h-5" />
+             <span className="text-[9px] font-bold">Candle</span>
+           </button>
            <button onClick={() => setMainTab('shoonya')} className={`flex-1 flex flex-col items-center gap-1 ${mainTab === 'shoonya' ? 'text-purple-400' : 'text-neutral-500'}`}>
              <Settings className="w-5 h-5" />
              <span className="text-[9px] font-bold">Setup</span>
@@ -510,6 +522,9 @@ export default function Home() {
 
         {/* 5 EMA Strategy View */}
         {mainTab === 'ema5' && <Ema5Strategy isEnabled={shoonyaConfig.ema5Enabled} portfolio={portfolio} history={history} />}
+
+        {/* 2-Candle Breakout Strategy View */}
+        {mainTab === 'candleBreakout' && <CandleBreakout portfolio={portfolio} history={history} handleSquareOff={handleSquareOff} squaringOff={squaringOff} />}
 
         {/* Legacy Gann 9 View */}
         {mainTab === 'gann9' && (

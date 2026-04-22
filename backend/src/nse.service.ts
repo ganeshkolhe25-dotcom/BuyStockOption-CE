@@ -142,6 +142,14 @@ export class NseService implements OnModuleInit {
         }
     }
 
+    getToken(symbol: string): string | undefined {
+        return this.tokenMap.get(symbol);
+    }
+
+    getResolvedSymbols(): string[] {
+        return Array.from(this.tokenMap.keys());
+    }
+
     /**
      * Unified fetch for LTP and pChange using Shoonya MultiQuote
      */

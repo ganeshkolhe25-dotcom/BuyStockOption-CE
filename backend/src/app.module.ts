@@ -12,6 +12,7 @@ import { ScannerService } from './scanner.service';
 import { PrismaService } from './prisma.service';
 import { GannAngleService } from './gann-angle.service';
 import { Ema5Service } from './ema5.service';
+import { CandleBreakoutService } from './candle-breakout.service';
 
 @Module({
   imports: [
@@ -19,6 +20,6 @@ import { Ema5Service } from './ema5.service';
     CacheModule.register()
   ],
   controllers: [AppController],
-  providers: [AppService, GannService, NseService, ShoonyaService, HeartbeatService, PaperTradingService, ScannerService, PrismaService, GannAngleService, Ema5Service],
+  providers: [AppService, GannService, NseService, ShoonyaService, HeartbeatService, PaperTradingService, ScannerService, PrismaService, GannAngleService, Ema5Service, CandleBreakoutService],
 })
 export class AppModule { }

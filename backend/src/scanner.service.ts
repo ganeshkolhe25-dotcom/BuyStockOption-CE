@@ -9,6 +9,7 @@ import { Ema5Service } from './ema5.service';
 import { HeartbeatService } from './heartbeat.service';
 import { PaperTradingService } from './paper.service';
 import { PrismaService } from './prisma.service';
+import { CandleBreakoutService } from './candle-breakout.service';
 
 @Injectable()
 export class ScannerService implements OnModuleInit {
@@ -22,7 +23,8 @@ export class ScannerService implements OnModuleInit {
         private readonly ema5Service: Ema5Service,
         private readonly heartbeatService: HeartbeatService,
         private readonly paperTrading: PaperTradingService,
-        private readonly prisma: PrismaService
+        private readonly prisma: PrismaService,
+        private readonly candleBreakout: CandleBreakoutService,
     ) { }
 
     async onModuleInit() {
@@ -389,5 +391,53 @@ export class ScannerService implements OnModuleInit {
                 data: scan.data,
             }), 43200000); // Maintain 12hr ttl
         }
+    }
+
+    /**
+     * 2-Candle Breakout Scanner — runs every minute, 9:18–11:30 AM IST (Mon-Fri).
+     *
+     * Phase 1 (9:18 AM onwards): Fetches 1-min TPSeries per stock to detect the first
+     *   red+green or green+red candle pair after the volatile 9:15-9:16 candle.
+     *   Marks the range: high = max(c1,c2), low = min(c1,c2).
+     *
+     * Phase 2 (once setup found): Polls live LTP every minute. If LTP breaks
+     *   above range high (+0.1%) → CE entry. Below range low (-0.1%) → PE entry.
+     *   SL = opposite side of range. Target = entry ± range width (1:1 R:R).
+     */
+    @Cron('0 * * * * *', { timeZone: 'Asia/Kolkata' })
+    async runCandleBreakoutScan() {
+        const timeStr = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+        if (timeStr < '09:18:00' || timeStr > '11:30:00') return;
+
+        // Phase 1: detect new setups (stops fetching once all symbols have a setup)
+        await this.candleBreakout.scanForSetups();
+
+        // Phase 2: check breakouts on PENDING setups using live LTP
+        const pending = this.candleBreakout.getSetups().filter(s => s.signal === 'PENDING');
+        if (pending.length === 0) return;
+
+        const ltpMap = await this.nseService.getBatchLTP(pending.map(s => s.symbol));
+        const triggered = this.candleBreakout.checkBreakouts(ltpMap);
+
+        for (const setup of triggered) {
+            // One trade per symbol per day
+            const todayTraded = await this.paperTrading.getTodayTradedSymbols('CANDLE_BREAKOUT');
+            if (todayTraded.includes(setup.symbol)) continue;
+
+            await this.heartbeatService.addToWatchlist(
+                setup.symbol,
+                setup.breakoutPrice!,
+                setup.signal as 'CE' | 'PE',
+                setup.entryTargetPrice!,
+                setup.entrySlPrice!,
+                'CANDLE_BREAKOUT',
+            );
+        }
+    }
+
+    /** EOD cleanup: clear candle setups so they don't carry over to next day */
+    @Cron('35 15 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    clearCandleBreakoutSetups() {
+        this.candleBreakout.clearAll();
     }
 }

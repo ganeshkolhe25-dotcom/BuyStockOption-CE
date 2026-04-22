@@ -7,6 +7,7 @@ import { HeartbeatService } from './heartbeat.service';
 import { ShoonyaService } from './shoonya.service';
 import { GannAngleService } from './gann-angle.service';
 import { NseService } from './nse.service';
+import { CandleBreakoutService } from './candle-breakout.service';
 
 @Controller()
 export class AppController {
@@ -17,7 +18,8 @@ export class AppController {
     private readonly heartbeatService: HeartbeatService,
     private readonly shoonyaService: ShoonyaService,
     private readonly gannAngleService: GannAngleService,
-    private readonly nseService: NseService
+    private readonly nseService: NseService,
+    private readonly candleBreakout: CandleBreakoutService,
   ) { }
 
   @Get('portfolio')
@@ -33,6 +35,11 @@ export class AppController {
   @Get('scan')
   async getLatestScanResults() {
     return await this.scannerService.getLatestScanResults();
+  }
+
+  @Get('candle-breakout')
+  getCandleBreakoutSetups() {
+    return { status: 'success', data: this.candleBreakout.getSetups() };
   }
 
   @Post('force-scan')

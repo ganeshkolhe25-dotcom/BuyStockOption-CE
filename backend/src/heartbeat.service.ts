@@ -143,6 +143,7 @@ export class HeartbeatService {
                 // Gann strategies use tight 0.05% buffer
                 const isEma = entry.strategyName === 'EMA_5';
                 const isGannAngle = entry.strategyName === 'GANN_ANGLE';
+                const isCandleBreakout = entry.strategyName === 'CANDLE_BREAKOUT';
                 const bufferPct = isEma ? 0.003 : 0.0005;
                 const buffer = entry.triggerPrice * bufferPct;
 
@@ -156,7 +157,7 @@ export class HeartbeatService {
                 const isGann9 = entry.strategyName === 'GANN_9';
 
                 // GANN_9: allow free movement during the 3-min wait — only check at the final mark.
-                // EMA_5 / GANN_ANGLE: invalidate immediately if LTP moves away from trigger.
+                // EMA_5 / GANN_ANGLE / CANDLE_BREAKOUT: invalidate immediately if LTP moves away.
                 if (!isSustaining && !isGann9) {
                     const invalidMsg = `Signal Invalidated: LTP ₹${ltp} moved away from ${entry.type} trigger ₹${entry.triggerPrice} during sustain period.`;
                     this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
@@ -166,10 +167,10 @@ export class HeartbeatService {
                     continue;
                 }
 
-                // GANN_ANGLE: execute immediately — fresh cross + momentum filter is the confirmation
+                // GANN_ANGLE / CANDLE_BREAKOUT: execute immediately — breakout is self-confirming
                 // EMA_5: 1-minute sustain (candle close + RSI + volume already confirms)
                 // GANN_9: 3-minute single final check (allows dips/recoveries within the window)
-                const sustainMs = isGannAngle ? 0 : isEma ? 1 * 60 * 1000 : 3 * 60 * 1000;
+                const sustainMs = (isGannAngle || isCandleBreakout) ? 0 : isEma ? 1 * 60 * 1000 : 3 * 60 * 1000;
                 const timeElapsedMs = Date.now() - entry.breakoutTime;
 
                 if (timeElapsedMs >= sustainMs) {
@@ -182,7 +183,7 @@ export class HeartbeatService {
                         updatedKeys = updatedKeys.filter(k => k !== key);
                         continue;
                     }
-                    const label = isGannAngle ? 'IMMEDIATE' : isEma ? '1-MIN' : '3-MIN';
+                    const label = (isGannAngle || isCandleBreakout) ? 'IMMEDIATE' : isEma ? '1-MIN' : '3-MIN';
                     this.logger.log(`🚀 ${label} SIGNAL CONFIRMED FOR [${entry.symbol}] AT ₹${ltp}! Triggering ${entry.type} Option Entry.`);
 
                     // Remove from watchlist so we don't buy it twice
@@ -227,9 +228,9 @@ export class HeartbeatService {
                 return;
             }
 
-            // GANN_ANGLE: place a limit buy order at mid price (bid+ask)/2
+            // GANN_ANGLE / CANDLE_BREAKOUT: place a limit buy order at mid price (bid+ask)/2
             // Actual fill is checked every 15s for up to 2 minutes, then discarded if unfilled
-            if (strategyName === 'GANN_ANGLE') {
+            if (strategyName === 'GANN_ANGLE' || strategyName === 'CANDLE_BREAKOUT') {
                 const midPrice = parseFloat(((optionPremiumInfo.bidPrice + optionPremiumInfo.askPrice) / 2).toFixed(2));
                 const lotValue = contract.lotSize * midPrice;
                 if (lotValue > 40000) {
@@ -461,10 +462,10 @@ export class HeartbeatService {
                     }
                 }
 
-                // Helper: place a mid-price limit sell for GANN_ANGLE, or close immediately for others
+                // Helper: place a mid-price limit sell for GANN_ANGLE/CANDLE_BREAKOUT, or close immediately
                 const triggerExit = async (reason: string) => {
                     const sellKey = `SELL:${pos.token}`;
-                    if (pos.strategyName === 'GANN_ANGLE') {
+                    if (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT') {
                         if (this.pendingLimitOrders.has(sellKey)) return; // already pending
                         const midPrice = parseFloat(((currentBid + (optionInfo?.askPrice ?? currentBid)) / 2).toFixed(2));
                         this.pendingLimitOrders.set(sellKey, {
@@ -483,9 +484,9 @@ export class HeartbeatService {
                         this.logger.warn(`🎯 TARGET HIT: [${pos.symbol}] Underlying reached ₹${ltp} >= Target ₹${pos.targetPrice}`);
                         await triggerExit(`Target Hit at ₹${ltp}`);
                     } else if (ltp < pos.slPrice) {
-                        if (pos.strategyName === 'GANN_ANGLE') {
-                            this.logger.warn(`🛑 GANN ANGLE BROKEN: [${pos.symbol}] ₹${ltp} < SL ₹${pos.slPrice}. Exiting immediately.`);
-                            await triggerExit(`Angle Broken at ₹${ltp}`);
+                        if (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT') {
+                            this.logger.warn(`🛑 SL HIT: [${pos.symbol}] ₹${ltp} < SL ₹${pos.slPrice}. Exiting immediately.`);
+                            await triggerExit(`SL Broken at ₹${ltp}`);
                         } else if (!pos.slTriggerTime) {
                             const now = Date.now();
                             this.paperTrading.updatePositionSLTrigger(pos.token, now);
@@ -513,9 +514,9 @@ export class HeartbeatService {
                         this.logger.warn(`🎯 TARGET HIT: [${pos.symbol}] Underlying reached ₹${ltp} <= Target ₹${pos.targetPrice}`);
                         await triggerExit(`Target Hit at ₹${ltp}`);
                     } else if (ltp > pos.slPrice) {
-                        if (pos.strategyName === 'GANN_ANGLE') {
-                            this.logger.warn(`🛑 GANN ANGLE BROKEN: [${pos.symbol}] ₹${ltp} > SL ₹${pos.slPrice}. Exiting immediately.`);
-                            await triggerExit(`Angle Broken at ₹${ltp}`);
+                        if (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT') {
+                            this.logger.warn(`🛑 SL HIT: [${pos.symbol}] ₹${ltp} > SL ₹${pos.slPrice}. Exiting immediately.`);
+                            await triggerExit(`SL Broken at ₹${ltp}`);
                         } else if (!pos.slTriggerTime) {
                             const now = Date.now();
                             this.paperTrading.updatePositionSLTrigger(pos.token, now);
