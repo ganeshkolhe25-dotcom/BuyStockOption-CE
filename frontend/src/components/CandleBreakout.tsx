@@ -156,7 +156,7 @@ export default function CandleBreakout({ portfolio, history, handleSquareOff, sq
         {(["signals", "ledger"] as const).map(tab => (
           <button key={tab} onClick={() => setActiveInnerTab(tab)}
             className={`px-4 py-2 rounded-t-lg text-sm font-medium transition-all capitalize ${activeInnerTab === tab ? "text-orange-400 border-b-2 border-orange-400" : "text-neutral-500 hover:text-neutral-300"}`}>
-            {tab === "signals" ? `Signals (${setups.length})` : `Ledger (${todayHistory.length})`}
+            {tab === "signals" ? `Signals (${setups.length})` : `Ledger (${activePositions.length + todayHistory.length})`}
           </button>
         ))}
       </div>
@@ -331,35 +331,79 @@ export default function CandleBreakout({ portfolio, history, handleSquareOff, sq
       )}
 
       {activeInnerTab === "ledger" && (
-        <div className="space-y-3">
-          {todayHistory.length === 0 ? (
-            <div className="text-center py-12 text-neutral-600 text-sm">No 2-Candle trades today.</div>
-          ) : (
-            todayHistory.map((h: any, i: number) => {
-              const pnl = h.realizedPnl || 0;
-              const entryIST = new Date(h.entryTime).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false });
-              const exitIST = h.exitTime ? new Date(h.exitTime).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false }) : "—";
-              return (
-                <div key={i} className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <span className={`px-2 py-0.5 rounded text-xs font-bold ${h.type === "CE" ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"}`}>{h.type}</span>
-                    <div>
-                      <div className="font-bold text-white text-sm">{h.symbol}</div>
-                      <div className="text-xs text-neutral-500 font-mono">{h.tradingSymbol}</div>
+        <div className="space-y-4">
+
+          {/* Open positions */}
+          {activePositions.length > 0 && (
+            <div>
+              <h3 className="text-sm font-semibold text-neutral-300 mb-3 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-orange-400 animate-pulse" />
+                Open Positions ({activePositions.length})
+              </h3>
+              <div className="space-y-3">
+                {activePositions.map((pos: any) => {
+                  const pnl = (pos.currentLtp - pos.entryPrice) * pos.qty;
+                  const entryIST = new Date(pos.entryTime).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false });
+                  return (
+                    <div key={pos.token} className="bg-neutral-900 border border-orange-500/30 rounded-xl p-4 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <span className={`px-2 py-0.5 rounded text-xs font-bold ${pos.type === "CE" ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"}`}>{pos.type}</span>
+                        <div>
+                          <div className="font-bold text-white text-sm">{pos.symbol}</div>
+                          <div className="text-xs text-neutral-500 font-mono">{pos.tradingSymbol}</div>
+                        </div>
+                      </div>
+                      <div className="text-xs text-neutral-500 text-center hidden md:block">
+                        <div>{entryIST} → <span className="text-orange-400">OPEN</span></div>
+                        <div className="mt-0.5">LTP ₹{pos.currentLtp?.toFixed(2)}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className={`font-bold font-mono ${pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>₹{pnl.toFixed(0)}</div>
+                        <div className="text-xs text-neutral-500">Qty {pos.qty}</div>
+                      </div>
                     </div>
-                  </div>
-                  <div className="text-xs text-neutral-500 text-center hidden md:block">
-                    <div>{entryIST} → {exitIST}</div>
-                    <div className="mt-0.5">{h.exitReason?.slice(0, 30)}</div>
-                  </div>
-                  <div className="text-right">
-                    <div className={`font-bold font-mono ${pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>₹{pnl.toFixed(0)}</div>
-                    <div className="text-xs text-neutral-500">Qty {h.quantity}</div>
-                  </div>
-                </div>
-              );
-            })
+                  );
+                })}
+              </div>
+            </div>
           )}
+
+          {/* Closed trades */}
+          {todayHistory.length === 0 && activePositions.length === 0 ? (
+            <div className="text-center py-12 text-neutral-600 text-sm">No 2-Candle trades today.</div>
+          ) : todayHistory.length > 0 ? (
+            <div>
+              {activePositions.length > 0 && (
+                <h3 className="text-sm font-semibold text-neutral-300 mb-3">Closed Trades ({todayHistory.length})</h3>
+              )}
+              <div className="space-y-3">
+                {todayHistory.map((h: any, i: number) => {
+                  const pnl = h.realizedPnl || 0;
+                  const entryIST = new Date(h.entryTime).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false });
+                  const exitIST = h.exitTime ? new Date(h.exitTime).toLocaleTimeString("en-IN", { timeZone: "Asia/Kolkata", hour12: false }) : "—";
+                  return (
+                    <div key={i} className="bg-neutral-900 border border-neutral-800 rounded-xl p-4 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <span className={`px-2 py-0.5 rounded text-xs font-bold ${h.type === "CE" ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"}`}>{h.type}</span>
+                        <div>
+                          <div className="font-bold text-white text-sm">{h.symbol}</div>
+                          <div className="text-xs text-neutral-500 font-mono">{h.tradingSymbol}</div>
+                        </div>
+                      </div>
+                      <div className="text-xs text-neutral-500 text-center hidden md:block">
+                        <div>{entryIST} → {exitIST}</div>
+                        <div className="mt-0.5">{h.exitReason?.slice(0, 30)}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className={`font-bold font-mono ${pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>₹{pnl.toFixed(0)}</div>
+                        <div className="text-xs text-neutral-500">Qty {h.quantity}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
         </div>
       )}
     </div>

@@ -58,8 +58,9 @@ export class CandleBreakoutService {
     }
 
     /**
-     * Fetch current LTP for all PENDING setups directly from Shoonya.
-     * Returns a map of symbol → ltp.
+     * Fetch current LTP for all PENDING setups using the NSE exchange (not NFO).
+     * NIFTY/BANKNIFTY are index tokens on NSE — getOptionQuote() would use NFO which fails.
+     * Reads from the WS tick cache first; falls back to REST GetQuotes with exch=NSE.
      */
     async fetchLtpMap(): Promise<Record<string, number>> {
         const ltpMap: Record<string, number> = {};
@@ -67,8 +68,19 @@ export class CandleBreakoutService {
             if (!this.setups.has(inst.symbol)) continue;
             const setup = this.setups.get(inst.symbol)!;
             if (setup.signal !== 'PENDING') continue;
-            const quote = await this.shoonya.getOptionQuote(inst.token);
-            if (quote && quote.ltp) ltpMap[inst.symbol] = quote.ltp;
+
+            // WS tick cache (subscribed at startup via nse.service refreshSecurityTokens)
+            const tick = this.shoonya.getTickPrice(inst.token);
+            if (tick !== null) {
+                ltpMap[inst.symbol] = tick;
+                continue;
+            }
+
+            // REST fallback: correct exchange is NSE, not NFO
+            const results = await this.shoonya.getMultiQuotes('NSE', [inst.token]);
+            if (results.length > 0 && results[0].lp) {
+                ltpMap[inst.symbol] = parseFloat(results[0].lp);
+            }
         }
         return ltpMap;
     }

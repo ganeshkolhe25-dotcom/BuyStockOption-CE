@@ -140,6 +140,13 @@ export class NseService implements OnModuleInit {
             this.shoonya.subscribeTokens('NSE', allTokens);
             this.logger.log(`[WS] Subscribed ${allTokens.length} NSE tokens to Shoonya tick feed.`);
         }
+
+        // Seed NSE index tokens so getBatchLTP + 2-candle breakout LTP checks work for NIFTY/BANKNIFTY.
+        // These are index tokens (not equities), never returned by searchSecurityToken, so we add them manually.
+        this.tokenMap.set('NIFTY', '26000');
+        this.tokenMap.set('BANKNIFTY', '26009');
+        this.shoonya.subscribeTokens('NSE', ['26000', '26009']);
+        this.logger.log('[WS] Subscribed NIFTY(26000) and BANKNIFTY(26009) index tokens to tick feed.');
     }
 
     getToken(symbol: string): string | undefined {
