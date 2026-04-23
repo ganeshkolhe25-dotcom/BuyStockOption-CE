@@ -179,18 +179,22 @@ export default function CandleBreakout({ portfolio, history, handleSquareOff, sq
             </div>
           )}
 
-          {/* Active positions */}
-          {activePositions.length > 0 && (
-            <div>
-              <h3 className="text-sm font-semibold text-neutral-300 mb-3 flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-orange-400 animate-pulse" />
-                Active Positions ({activePositions.length})
-              </h3>
+          {/* Active positions — always visible */}
+          <div>
+            <h3 className="text-sm font-semibold text-neutral-300 mb-3 flex items-center gap-2">
+              <span className={`w-2 h-2 rounded-full ${activePositions.length > 0 ? "bg-orange-400 animate-pulse" : "bg-neutral-600"}`} />
+              Active Positions ({activePositions.length})
+            </h3>
+            {activePositions.length === 0 ? (
+              <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-5 text-center text-sm text-neutral-500">
+                No open 2-Candle positions right now. A position will appear here once a breakout is detected and an option is bought.
+              </div>
+            ) : (
               <div className="space-y-3">
                 {activePositions.map((pos: any) => {
                   const pnl = (pos.currentLtp - pos.entryPrice) * pos.qty;
                   return (
-                    <div key={pos.token} className="bg-neutral-900 border border-neutral-800 rounded-xl p-4">
+                    <div key={pos.token} className="bg-neutral-900 border border-orange-500/30 rounded-xl p-4">
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-3">
                           <span className={`px-2 py-0.5 rounded text-xs font-bold ${pos.type === "CE" ? "bg-emerald-500/20 text-emerald-400" : "bg-red-500/20 text-red-400"}`}>{pos.type}</span>
@@ -216,8 +220,8 @@ export default function CandleBreakout({ portfolio, history, handleSquareOff, sq
                   );
                 })}
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           {/* Triggered signals */}
           {triggered.length > 0 && (
