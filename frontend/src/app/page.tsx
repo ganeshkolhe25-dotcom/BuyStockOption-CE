@@ -607,8 +607,8 @@ export default function Home() {
           >
             <Briefcase className="w-4 h-4" />
             Active Positions
-            {portfolio.positions?.length > 0 && (
-              <span className="ml-1 bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full text-xs">{portfolio.positions.length}</span>
+            {gann9ActivePos.length > 0 && (
+              <span className="ml-1 bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full text-xs">{gann9ActivePos.length}</span>
             )}
           </button>
           <button
@@ -951,14 +951,14 @@ export default function Home() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-800/50">
-                    {portfolio.positions?.length === 0 ? (
+                    {gann9ActivePos.length === 0 ? (
                       <tr>
                         <td colSpan={11} className="px-6 py-12 text-center text-neutral-500">
-                          No active positions right now. Waiting for Gann Engine Trade Signals...
+                          No active Gann Square-9 positions right now. Waiting for trade signals...
                         </td>
                       </tr>
                     ) : (
-                      portfolio.positions?.map((pos: any) => {
+                      gann9ActivePos.map((pos: any) => {
                         const uPnl = (pos.currentLtp - pos.entryPrice) * pos.qty;
                         return (
                           <tr key={pos.token} className="hover:bg-neutral-800/20 transition-colors">
@@ -1017,10 +1017,10 @@ export default function Home() {
 
               {/* Mobile Card Layout for Active Positions */}
               <div className="block md:hidden divide-y divide-neutral-800">
-                {portfolio.positions?.length === 0 ? (
-                  <div className="px-4 py-8 text-center text-sm text-neutral-500">No active positions right now.</div>
+                {gann9ActivePos.length === 0 ? (
+                  <div className="px-4 py-8 text-center text-sm text-neutral-500">No active Gann Square-9 positions right now.</div>
                 ) : (
-                  portfolio.positions?.map((pos: any) => {
+                  gann9ActivePos.map((pos: any) => {
                     const uPnl = (pos.currentLtp - pos.entryPrice) * pos.qty;
                     return (
                       <div key={pos.token} className="p-4 space-y-4">
