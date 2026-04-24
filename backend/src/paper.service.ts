@@ -19,6 +19,7 @@ export interface PaperPosition {
     maxProfit: number;
     maxLoss: number;
     strategyName?: string;
+    partialPnl: number;   // accumulated P&L from partial exits (e.g. half-exit at 1:1)
 }
 
 @Injectable()
@@ -195,8 +196,9 @@ export class PaperTradingService implements OnModuleInit {
             stockLtp: 0,
             maxProfit: 0,
             maxLoss: 0,
-            strategyName: strategyName || 'Default'
-        } as any); // Cast to any temporarily to avoid interface mismatch if not updated
+            strategyName: strategyName || 'Default',
+            partialPnl: 0,
+        });
 
         this.logger.log(`✅ PAPER SETTLED: Bought ${qty} shares of [${symbol}] ${type} Token ${token} (${tradingSymbol}) at ₹${price}.`);
         return true;
@@ -251,14 +253,38 @@ export class PaperTradingService implements OnModuleInit {
     }
 
     /**
+     * Partially close a position (reduce qty, accumulate partial P&L).
+     * Used by 2-candle half-exit at 1:1 R:R. Position stays OPEN for remaining qty.
+     */
+    async partialClosePosition(token: string, closeQty: number, exitOptionPrice: number, reason: string) {
+        const position = this.activePositions.get(token);
+        if (!position || position.qty <= 0) return;
+
+        const partialPnl = (exitOptionPrice - position.entryPrice) * closeQty;
+        position.qty -= closeQty;
+        position.partialPnl = (position.partialPnl || 0) + partialPnl;
+
+        if (position.dbEntryId) {
+            await this.prisma.tradeHistory.update({
+                where: { id: position.dbEntryId },
+                data: {
+                    exitReason: `Half exit: ${closeQty} lots @ ₹${exitOptionPrice.toFixed(2)} (+₹${partialPnl.toFixed(0)}). Trailing remaining ${position.qty} lots.`,
+                }
+            });
+        }
+
+        this.logger.log(`✂️ PARTIAL CLOSE: [${position.symbol}] ${closeQty} lots @ ₹${exitOptionPrice.toFixed(2)}. P&L: ₹${partialPnl.toFixed(0)}. Remaining: ${position.qty} lots.`);
+    }
+
+    /**
      * Close a specific position and settle funds (Persists to SQLite Database)
      */
     async closePosition(token: string, exitPrice: number, reason: string = 'Target/SL Hit') {
         const position = this.activePositions.get(token);
         if (!position) return;
 
-        // For Option Buying, Profit = (Exit Price - Entry Price) * Qty
-        const pnl = (exitPrice - position.entryPrice) * position.qty;
+        // For Option Buying, Profit = (Exit Price - Entry Price) * Qty + any partial exit P&L
+        const pnl = (exitPrice - position.entryPrice) * position.qty + (position.partialPnl || 0);
 
         // Update database explicitly indicating the trade is over
         if (position.dbEntryId) {

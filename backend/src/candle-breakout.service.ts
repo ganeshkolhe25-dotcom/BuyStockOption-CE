@@ -37,6 +37,9 @@ export class CandleBreakoutService {
     // Per-symbol detected 2-candle setup
     private readonly setups = new Map<string, CandleSetup>();
 
+    // Symbols intentionally skipped today due to gap/volatility filters
+    private readonly skippedSymbols = new Map<string, string>(); // symbol → reason
+
     constructor(private readonly shoonya: ShoonyaService) {}
 
     /**
@@ -45,7 +48,7 @@ export class CandleBreakoutService {
      * Skips symbols that already have a setup found.
      */
     async scanForSetups(): Promise<void> {
-        const pending = INSTRUMENTS.filter(i => !this.setups.has(i.symbol));
+        const pending = INSTRUMENTS.filter(i => !this.setups.has(i.symbol) && !this.skippedSymbols.has(i.symbol));
         if (pending.length === 0) return;
 
         const openTs = this.getMarketOpenTs();
@@ -135,7 +138,12 @@ export class CandleBreakoutService {
 
     clearAll(): void {
         this.setups.clear();
-        this.logger.log('[2-Candle] All setups cleared for new day.');
+        this.skippedSymbols.clear();
+        this.logger.log('[2-Candle] All setups and skip filters cleared for new day.');
+    }
+
+    getSkippedSymbols(): Map<string, string> {
+        return this.skippedSymbols;
     }
 
     // ── Private helpers ─────────────────────────────────────────────────────
@@ -161,6 +169,42 @@ export class CandleBreakoutService {
 
             // Need ≥3 candles: first to skip (9:15–9:16) + at least one pair
             if (todayCandles.length < 3) return;
+
+            // ── Gap + volatility filters ──────────────────────────────────────
+            const firstCandle = todayCandles[0]; // 9:15 candle
+            const firstCandleRange = firstCandle.high - firstCandle.low;
+
+            // Filter 1: 9:15 candle range > 80 pts → market opened too chaotic
+            if (firstCandleRange > 80) {
+                this.skippedSymbols.set(symbol, `9:15 candle range ${firstCandleRange.toFixed(0)}pts > 80`);
+                this.logger.warn(
+                    `🚫 [${symbol}] SKIP: 9:15 candle range ₹${firstCandleRange.toFixed(0)}pts > 80pts — too volatile. No trade today.`
+                );
+                return;
+            }
+
+            // Filter 2: Gap from previous close > 150 pts → big move already done before open
+            try {
+                const quotes = await this.shoonya.getMultiQuotes('NSE', [token]);
+                if (quotes.length > 0 && quotes[0]?.pc) {
+                    const prevClose = parseFloat(quotes[0].pc);
+                    const gapPts = Math.abs(firstCandle.open - prevClose);
+                    if (gapPts > 150) {
+                        this.skippedSymbols.set(symbol, `Gap ${gapPts.toFixed(0)}pts > 150 — move already done`);
+                        this.logger.warn(
+                            `🚫 [${symbol}] SKIP: Gap ₹${gapPts.toFixed(0)}pts > 150pts — big move done before open. No trade today.`
+                        );
+                        return;
+                    } else if (gapPts > 80) {
+                        this.logger.warn(
+                            `⚠️  [${symbol}] Gap ₹${gapPts.toFixed(0)}pts (80–150 range) — proceed with caution.`
+                        );
+                    }
+                }
+            } catch (err: any) {
+                this.logger.debug(`[${symbol}] Gap check skipped: ${err.message}`);
+            }
+            // ─────────────────────────────────────────────────────────────────
 
             // Skip the very first candle (9:15–9:16 AM — too volatile)
             const validCandles = todayCandles.slice(1);

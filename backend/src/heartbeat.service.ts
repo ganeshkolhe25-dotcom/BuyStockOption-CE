@@ -42,6 +42,8 @@ export class HeartbeatService {
     private pendingLimitOrders = new Map<string, PendingLimitOrder>();
     // Symbols where option token resolution permanently failed today — skip on next attempt
     private readonly fnoExcluded = new Set<string>();
+    // 2-Candle: tokens where half-exit at 1:1 has already been done — remaining half is trailing
+    private readonly cbHalfExited = new Set<string>();
 
     constructor(
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
@@ -489,6 +491,51 @@ export class HeartbeatService {
                     }
                 }
 
+                // CANDLE_BREAKOUT: phase 1 → half-exit at 1:1, move SL to breakeven
+                //                  phase 2 → trail remaining half by 30 pts
+                if (pos.strategyName === 'CANDLE_BREAKOUT') {
+                    // Reconstruct 1:1 (phase1) level from stored 2:1 target + SL
+                    // Derivation: entry = (target2R + 2*sl) / 3, phase1 = entry + (entry - sl) for CE
+                    // Simplified: phase1 = (2 * target2R + sl) / 3
+                    const phase1Price = parseFloat(((2 * pos.targetPrice! + pos.slPrice!) / 3).toFixed(2));
+
+                    if (!this.cbHalfExited.has(pos.token)) {
+                        const phase1Hit = pos.type === 'CE' ? ltp >= phase1Price : ltp <= phase1Price;
+                        if (phase1Hit) {
+                            const halfQty = Math.floor(pos.qty / 2);
+                            if (halfQty > 0) {
+                                // Exit half at current option bid
+                                await this.paperTrading.partialClosePosition(pos.token, halfQty, currentBid, '1:1 R:R reached');
+                                // Move SL to breakeven: entry = (2*sl + target2R) / 3
+                                const breakevenUnderlying = parseFloat(((2 * pos.slPrice! + pos.targetPrice!) / 3).toFixed(2));
+                                this.paperTrading.updatePositionSL(pos.token, breakevenUnderlying);
+                                this.cbHalfExited.add(pos.token);
+                                this.logger.log(
+                                    `✂️  2-CANDLE HALF EXIT: [${pos.symbol}] ${pos.type} 1:1 hit @ underlying ₹${ltp}. ` +
+                                    `Closed ${halfQty} lots @ option ₹${currentBid.toFixed(2)}. ` +
+                                    `SL → breakeven ₹${breakevenUnderlying}. Trailing ${pos.qty - halfQty} lots.`
+                                );
+                            }
+                        }
+                    } else {
+                        // Trail remaining half — SL moves 30 pts behind current price
+                        const newTrailSL = pos.type === 'CE'
+                            ? parseFloat((ltp - 30).toFixed(2))
+                            : parseFloat((ltp + 30).toFixed(2));
+
+                        const shouldUpdate = pos.type === 'CE'
+                            ? newTrailSL > pos.slPrice!
+                            : newTrailSL < pos.slPrice!;
+
+                        if (shouldUpdate) {
+                            this.logger.log(
+                                `📈 2-CANDLE TRAIL: [${pos.symbol}] ${pos.type} SL ₹${pos.slPrice} → ₹${newTrailSL} (underlying ₹${ltp})`
+                            );
+                            this.paperTrading.updatePositionSL(pos.token, newTrailSL);
+                        }
+                    }
+                }
+
                 // Helper: place a mid-price limit sell for GANN_ANGLE/CANDLE_BREAKOUT, or close immediately
                 const triggerExit = async (reason: string) => {
                     const sellKey = `SELL:${pos.token}`;
@@ -663,6 +710,13 @@ export class HeartbeatService {
             }
         }
         return watchlist;
+    }
+
+    /** EOD: clear 2-candle half-exit tracker so next day starts fresh */
+    @Cron('40 15 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    clearCandleBreakoutState() {
+        this.cbHalfExited.clear();
+        this.logger.log('[2-Candle] Half-exit tracker cleared for new day.');
     }
 
     private isMarketHours(): boolean {
