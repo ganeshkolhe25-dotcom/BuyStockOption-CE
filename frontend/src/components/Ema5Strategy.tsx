@@ -3,6 +3,7 @@
 import { useState } from "react";
 import axios from "axios";
 import { Activity, TrendingUp, TrendingDown, Crosshair, BarChart2, List } from "lucide-react";
+import StrategyCalendar from "./StrategyCalendar";
 
 export default function Ema5Strategy({ isEnabled, portfolio, history }: { isEnabled?: boolean, portfolio?: any, history?: any[] }) {
   const [squaringOff, setSquaringOff] = useState<string | null>(null);
@@ -176,6 +177,8 @@ export default function Ema5Strategy({ isEnabled, portfolio, history }: { isEnab
       )}
 
       {activeInnerTab === 'ledger' && (
+        <div className="space-y-4">
+          <StrategyCalendar history={history || []} strategyName="EMA_5" accentColor="amber" />
         <div className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden">
           <div className="px-6 py-5 border-b border-neutral-800">
             <h2 className="text-base font-bold text-white">5 EMA Strategy Ledger</h2>
@@ -279,6 +282,7 @@ export default function Ema5Strategy({ isEnabled, portfolio, history }: { isEnab
               </tbody>
             </table>
           </div>
+        </div>
         </div>
       )}
 

@@ -100,26 +100,28 @@ export class CandleBreakoutService {
             const buffer = setup.rangeHigh * 0.001; // 0.1% buffer to avoid noise
 
             if (ltp > setup.rangeHigh + buffer) {
+                const slDist = ltp - setup.rangeLow;           // distance from entry to SL
                 setup.signal = 'CE';
                 setup.breakoutPrice = ltp;
                 setup.breakoutAt = Date.now();
-                setup.entryTargetPrice = parseFloat((ltp + 35).toFixed(2));  // fixed 35-pt target
-                setup.entrySlPrice = parseFloat(setup.rangeLow.toFixed(2));  // SL = range low
+                setup.entryTargetPrice = parseFloat((ltp + 2 * slDist).toFixed(2)); // 2:1 R:R target
+                setup.entrySlPrice = parseFloat(setup.rangeLow.toFixed(2));          // SL = range low
                 triggered.push(setup);
                 this.logger.log(
                     `📈 2-CANDLE CE: [${symbol}] ₹${ltp} > range high ₹${setup.rangeHigh.toFixed(2)} ` +
-                    `→ Target ₹${setup.entryTargetPrice} | SL ₹${setup.entrySlPrice}`
+                    `→ SL dist ${slDist.toFixed(1)}pts → Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
                 );
             } else if (ltp < setup.rangeLow - buffer) {
+                const slDist = setup.rangeHigh - ltp;          // distance from entry to SL
                 setup.signal = 'PE';
                 setup.breakoutPrice = ltp;
                 setup.breakoutAt = Date.now();
-                setup.entryTargetPrice = parseFloat((ltp - 35).toFixed(2));  // fixed 35-pt target
-                setup.entrySlPrice = parseFloat(setup.rangeHigh.toFixed(2)); // SL = range high
+                setup.entryTargetPrice = parseFloat((ltp - 2 * slDist).toFixed(2)); // 2:1 R:R target
+                setup.entrySlPrice = parseFloat(setup.rangeHigh.toFixed(2));         // SL = range high
                 triggered.push(setup);
                 this.logger.log(
                     `📉 2-CANDLE PE: [${symbol}] ₹${ltp} < range low ₹${setup.rangeLow.toFixed(2)} ` +
-                    `→ Target ₹${setup.entryTargetPrice} | SL ₹${setup.entrySlPrice}`
+                    `→ SL dist ${slDist.toFixed(1)}pts → Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
                 );
             }
         }

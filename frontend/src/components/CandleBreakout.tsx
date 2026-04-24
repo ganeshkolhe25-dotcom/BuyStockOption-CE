@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import axios from "axios";
 import { CandlestickChart, TrendingUp, TrendingDown, Clock, AlertTriangle, Minus } from "lucide-react";
+import StrategyCalendar from "./StrategyCalendar";
 
 interface OneMinCandle {
   time: number;
@@ -336,6 +337,7 @@ export default function CandleBreakout({ portfolio, history, handleSquareOff, sq
 
       {activeInnerTab === "ledger" && (
         <div className="space-y-4">
+          <StrategyCalendar history={history || []} strategyName="CANDLE_BREAKOUT" accentColor="orange" />
 
           {/* Open positions */}
           {activePositions.length > 0 && (

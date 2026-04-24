@@ -7,6 +7,7 @@ import DashboardTab from "@/components/DashboardTab";
 import GannAngle from "@/components/GannAngle";
 import Ema5Strategy from "@/components/Ema5Strategy";
 import CandleBreakout from "@/components/CandleBreakout";
+import StrategyCalendar from "@/components/StrategyCalendar";
 
 interface StockData {
   symbol: string;
@@ -1079,8 +1080,9 @@ export default function Home() {
         {/* Tab 3: Trade History Ledger */}
         {
           activeTab === 'history' && (
-            <div className="flex flex-col">
+            <div className="flex flex-col gap-4">
               {renderHeatmap()}
+              <StrategyCalendar history={history || []} strategyName={['GANN_9', null]} accentColor="emerald" />
               {/* G4: Failed/rejected trade count (Gann-9 only) */}
               {(() => {
                 const failedCount = history?.filter((r: any) => (r.strategyName === 'GANN_9' || !r.strategyName) && (r.token === 'FAILED' || r.quantity === 0)).length || 0;

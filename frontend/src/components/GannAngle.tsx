@@ -3,6 +3,7 @@
 import { useState } from "react";
 import axios from "axios";
 import { Search, TrendingUp, TrendingDown, Crosshair, AlertTriangle, Lock, Clock } from "lucide-react";
+import StrategyCalendar from "./StrategyCalendar";
 
 const NIFTY_100 = [
   "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "BHARTIARTL", "INFY", "ITC", "SBI", "L&T", "BAJFINANCE",
@@ -354,6 +355,8 @@ export default function GannAngle({ isEnabled, portfolio, history, handleSquareO
       )}
 
       {activeInnerTab === 'ledger' && (
+        <div className="space-y-4">
+          <StrategyCalendar history={history || []} strategyName="GANN_ANGLE" accentColor="indigo" />
         <div className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden">
           <div className="px-6 py-5 border-b border-neutral-800">
             <h2 className="text-base font-bold text-white">Gann Angle Trade Ledger</h2>
@@ -462,6 +465,7 @@ export default function GannAngle({ isEnabled, portfolio, history, handleSquareO
               </table>
             </div>
           )}
+        </div>
         </div>
       )}
     </div>
