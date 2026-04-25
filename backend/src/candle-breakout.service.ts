@@ -220,11 +220,11 @@ export class CandleBreakoutService {
                 // XOR: exactly one must be green, one must be red
                 if (c1.isGreen === c2.isGreen) continue;
 
-                // Skip if range too tight (<0.15% = noise) or too wide (>0.30% = SL too far)
+                // Skip if range too tight (<0.05% = micro-noise) or too wide (>0.50% = SL too far)
                 const rangeHigh = Math.max(c1.high, c2.high);
                 const rangeLow = Math.min(c1.low, c2.low);
                 const rangePct = ((rangeHigh - rangeLow) / rangeLow) * 100;
-                if (rangePct < 0.15 || rangePct > 0.30) continue;
+                if (rangePct < 0.05 || rangePct > 0.50) continue;
 
                 this.setups.set(symbol, {
                     symbol,
