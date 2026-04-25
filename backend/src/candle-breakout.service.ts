@@ -184,23 +184,23 @@ export class CandleBreakoutService {
                 return;
             }
 
-            // Filter 2: Gap from previous close > 0.60% → big move already done before open
+            // Filter 2: Gap from previous close > 0.80% → big move already done before open
             try {
                 const quotes = await this.shoonya.getMultiQuotes('NSE', [token]);
                 if (quotes.length > 0 && quotes[0]?.pc) {
                     const prevClose = parseFloat(quotes[0].pc);
                     const gapPts = Math.abs(firstCandle.open - prevClose);
-                    const gapThreshold = parseFloat((prevClose * 0.006).toFixed(2));
-                    const cautionThreshold = parseFloat((prevClose * 0.003).toFixed(2));
+                    const gapThreshold = parseFloat((prevClose * 0.008).toFixed(2));
+                    const cautionThreshold = parseFloat((prevClose * 0.004).toFixed(2));
                     if (gapPts > gapThreshold) {
-                        this.skippedSymbols.set(symbol, `Gap ${gapPts.toFixed(0)}pts > ${gapThreshold.toFixed(0)} (0.60%) — move already done`);
+                        this.skippedSymbols.set(symbol, `Gap ${gapPts.toFixed(0)}pts > ${gapThreshold.toFixed(0)} (0.80%) — move already done`);
                         this.logger.warn(
-                            `🚫 [${symbol}] SKIP: Gap ₹${gapPts.toFixed(0)}pts > ${gapThreshold.toFixed(0)}pts (0.60%) — big move done before open. No trade today.`
+                            `🚫 [${symbol}] SKIP: Gap ₹${gapPts.toFixed(0)}pts > ${gapThreshold.toFixed(0)}pts (0.80%) — big move done before open. No trade today.`
                         );
                         return;
                     } else if (gapPts > cautionThreshold) {
                         this.logger.warn(
-                            `⚠️  [${symbol}] Gap ₹${gapPts.toFixed(0)}pts (0.30–0.60% range) — proceed with caution.`
+                            `⚠️  [${symbol}] Gap ₹${gapPts.toFixed(0)}pts (0.40–0.80% range) — proceed with caution.`
                         );
                     }
                 }
@@ -220,11 +220,11 @@ export class CandleBreakoutService {
                 // XOR: exactly one must be green, one must be red
                 if (c1.isGreen === c2.isGreen) continue;
 
-                // Skip if range is too small (<0.1%) or too large (>2%) — noise / gap
+                // Skip if range too tight (<0.15% = noise) or too wide (>0.30% = SL too far)
                 const rangeHigh = Math.max(c1.high, c2.high);
                 const rangeLow = Math.min(c1.low, c2.low);
                 const rangePct = ((rangeHigh - rangeLow) / rangeLow) * 100;
-                if (rangePct < 0.1 || rangePct > 2.0) continue;
+                if (rangePct < 0.15 || rangePct > 0.30) continue;
 
                 this.setups.set(symbol, {
                     symbol,

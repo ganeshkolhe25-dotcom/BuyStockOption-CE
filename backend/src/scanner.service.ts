@@ -470,7 +470,7 @@ export class ScannerService implements OnModuleInit {
     @Cron('0 * * * * *', { timeZone: 'Asia/Kolkata' })
     async runCandleBreakoutScan() {
         const timeStr = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
-        if (timeStr < '09:18:00' || timeStr > '11:30:00') return;
+        if (timeStr < '09:18:00' || timeStr > '09:45:00') return;
 
         // Phase 1: detect new setups (stops fetching once all symbols have a setup)
         await this.candleBreakout.scanForSetups();
