@@ -492,7 +492,7 @@ export class HeartbeatService {
                 }
 
                 // CANDLE_BREAKOUT: phase 1 → half-exit at 1:1, move SL to breakeven
-                //                  phase 2 → trail remaining half by 30 pts
+                //                  phase 2 → trail remaining half by 0.125% of underlying
                 if (pos.strategyName === 'CANDLE_BREAKOUT') {
                     // Reconstruct 1:1 (phase1) level from stored 2:1 target + SL
                     // Derivation: entry = (target2R + 2*sl) / 3, phase1 = entry + (entry - sl) for CE
@@ -518,10 +518,11 @@ export class HeartbeatService {
                             }
                         }
                     } else {
-                        // Trail remaining half — SL moves 30 pts behind current price
+                        // Trail remaining half — SL moves 0.125% of underlying behind current price
+                        const trailPts = parseFloat((ltp * 0.00125).toFixed(2));
                         const newTrailSL = pos.type === 'CE'
-                            ? parseFloat((ltp - 30).toFixed(2))
-                            : parseFloat((ltp + 30).toFixed(2));
+                            ? parseFloat((ltp - trailPts).toFixed(2))
+                            : parseFloat((ltp + trailPts).toFixed(2));
 
                         const shouldUpdate = pos.type === 'CE'
                             ? newTrailSL > pos.slPrice!
