@@ -68,6 +68,10 @@ export default function CandleBreakout({ portfolio, history, handleSquareOff, sq
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string>("");
   const [activeInnerTab, setActiveInnerTab] = useState<"signals" | "ledger">("signals");
+  const [niftyLots, setNiftyLots] = useState(1);
+  const [bankNiftyLots, setBankNiftyLots] = useState(1);
+  const [lotSaving, setLotSaving] = useState(false);
+  const [lotSaved, setLotSaved] = useState(false);
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
@@ -83,8 +87,33 @@ export default function CandleBreakout({ portfolio, history, handleSquareOff, sq
     }
   };
 
+  const fetchLotConfig = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/shoonya-config`);
+      if (res.data.candleNiftyLots !== undefined) setNiftyLots(res.data.candleNiftyLots);
+      if (res.data.candleBankNiftyLots !== undefined) setBankNiftyLots(res.data.candleBankNiftyLots);
+    } catch { /* ignore */ }
+  };
+
+  const saveLotConfig = async () => {
+    setLotSaving(true);
+    try {
+      const existing = (await axios.get(`${API_URL}/shoonya-config`)).data;
+      await axios.post(`${API_URL}/shoonya-config`, {
+        ...existing,
+        candleNiftyLots: niftyLots,
+        candleBankNiftyLots: bankNiftyLots,
+      });
+      setLotSaved(true);
+      setTimeout(() => setLotSaved(false), 2000);
+    } catch { /* ignore */ } finally {
+      setLotSaving(false);
+    }
+  };
+
   useEffect(() => {
     fetchSetups();
+    fetchLotConfig();
     const id = setInterval(fetchSetups, 15000);
     return () => clearInterval(id);
   }, []);
@@ -147,6 +176,35 @@ export default function CandleBreakout({ portfolio, history, handleSquareOff, sq
             <div className="bg-neutral-900 border border-neutral-800 px-4 py-2 rounded-xl text-center">
               <div className="text-[10px] text-neutral-500 uppercase font-bold tracking-wider">Setups</div>
               <div className="text-yellow-400 font-mono font-bold text-sm">{setups.length}</div>
+            </div>
+
+            {/* Lot size config */}
+            <div className="bg-neutral-900 border border-orange-500/20 px-4 py-2 rounded-xl flex items-center gap-3">
+              <div>
+                <div className="text-[10px] text-neutral-500 uppercase font-bold tracking-wider mb-1">Lots</div>
+                <div className="flex items-center gap-2">
+                  <div className="flex flex-col items-center">
+                    <span className="text-[9px] text-neutral-600 mb-0.5">NIFTY</span>
+                    <input
+                      type="number" min={1} max={10} value={niftyLots}
+                      onChange={e => setNiftyLots(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-12 text-center font-mono text-sm bg-neutral-800 border border-neutral-700 rounded-lg px-1 py-1 text-white focus:border-orange-500 focus:outline-none"
+                    />
+                  </div>
+                  <div className="flex flex-col items-center">
+                    <span className="text-[9px] text-neutral-600 mb-0.5">BANKNIFTY</span>
+                    <input
+                      type="number" min={1} max={10} value={bankNiftyLots}
+                      onChange={e => setBankNiftyLots(Math.max(1, parseInt(e.target.value) || 1))}
+                      className="w-12 text-center font-mono text-sm bg-neutral-800 border border-neutral-700 rounded-lg px-1 py-1 text-white focus:border-orange-500 focus:outline-none"
+                    />
+                  </div>
+                  <button onClick={saveLotConfig} disabled={lotSaving}
+                    className={`mt-4 text-xs px-2 py-1 rounded-lg border font-medium transition-all ${lotSaved ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/10" : "border-orange-500/30 text-orange-400 bg-orange-500/10 hover:bg-orange-500/20"} disabled:opacity-50`}>
+                    {lotSaving ? "..." : lotSaved ? "✓" : "Save"}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

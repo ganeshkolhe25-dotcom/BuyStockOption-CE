@@ -84,7 +84,11 @@ export class ShoonyaService implements OnModuleInit {
                 vc: dbConfig?.vc || process.env.SHOONYA_VC || '',
                 appkey: dbConfig?.appkey || process.env.SHOONYA_APPKEY || '',
                 // @ts-ignore
-                expiryMonth: dbConfig?.expiryMonth || 'AUTO'
+                expiryMonth: dbConfig?.expiryMonth || 'AUTO',
+                // @ts-ignore
+                candleNiftyLots: (dbConfig as any)?.candleNiftyLots ?? 1,
+                // @ts-ignore
+                candleBankNiftyLots: (dbConfig as any)?.candleBankNiftyLots ?? 1,
             };
             this.configCache = { value, expiresAt: now + 30_000 };
             return value;

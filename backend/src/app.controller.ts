@@ -92,7 +92,9 @@ export class AppController {
       expiryMonth: 'APR',
       gann9Enabled: true,
       gannAngleEnabled: false,
-      ema5Enabled: false
+      ema5Enabled: false,
+      candleNiftyLots: 1,
+      candleBankNiftyLots: 1,
     };
   }
 
@@ -128,6 +130,8 @@ export class AppController {
           gannAngleEnabled: body.gannAngleEnabled !== undefined ? Boolean(body.gannAngleEnabled) : false,
           ema5Enabled: body.ema5Enabled !== undefined ? Boolean(body.ema5Enabled) : false,
           initialFunds: parseFloat(body.initialFunds) || 100000,
+          candleNiftyLots: parseInt(body.candleNiftyLots) || 1,
+          candleBankNiftyLots: parseInt(body.candleBankNiftyLots) || 1,
         }
       });
     } else {
@@ -156,6 +160,8 @@ export class AppController {
           gannAngleEnabled: body.gannAngleEnabled !== undefined ? Boolean(body.gannAngleEnabled) : false,
           ema5Enabled: body.ema5Enabled !== undefined ? Boolean(body.ema5Enabled) : false,
           initialFunds: parseFloat(body.initialFunds) || 100000,
+          candleNiftyLots: parseInt(body.candleNiftyLots) || 1,
+          candleBankNiftyLots: parseInt(body.candleBankNiftyLots) || 1,
         }
       });
     }

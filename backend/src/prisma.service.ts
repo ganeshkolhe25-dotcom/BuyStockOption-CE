@@ -8,6 +8,17 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     async onModuleInit() {
         await this.$connect();
         this.logger.log('📦 Connected to Prisma SQLite Database.');
+        await this.runMigrations();
+    }
+
+    private async runMigrations() {
+        const cols = [
+            `ALTER TABLE "ShoonyaConfig" ADD COLUMN IF NOT EXISTS "candleNiftyLots" INTEGER NOT NULL DEFAULT 1`,
+            `ALTER TABLE "ShoonyaConfig" ADD COLUMN IF NOT EXISTS "candleBankNiftyLots" INTEGER NOT NULL DEFAULT 1`,
+        ];
+        for (const sql of cols) {
+            try { await this.$executeRawUnsafe(sql); } catch { /* column already exists */ }
+        }
     }
 
     async onModuleDestroy() {

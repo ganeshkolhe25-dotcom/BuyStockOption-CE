@@ -261,9 +261,17 @@ export class HeartbeatService {
             // Actual fill is checked every 15s for up to 2 minutes, then discarded if unfilled
             if (strategyName === 'GANN_ANGLE' || strategyName === 'CANDLE_BREAKOUT') {
                 const midPrice = parseFloat(((optionPremiumInfo.bidPrice + optionPremiumInfo.askPrice) / 2).toFixed(2));
-                const lotValue = contract.lotSize * midPrice;
+                let tradeQty = contract.lotSize;
+                if (strategyName === 'CANDLE_BREAKOUT') {
+                    const cfg = await this.shoonyaService.getConfig();
+                    const lotMultiplier = symbol === 'NIFTY'
+                        ? (cfg.candleNiftyLots || 1)
+                        : (cfg.candleBankNiftyLots || 1);
+                    tradeQty = contract.lotSize * lotMultiplier;
+                }
+                const lotValue = tradeQty * midPrice;
                 if (lotValue > 40000) {
-                    const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Mid: ₹${midPrice}, Qty: ${contract.lotSize})`;
+                    const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Mid: ₹${midPrice}, Qty: ${tradeQty})`;
                     this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
                     this.logger.warn(failMsg);
                     return;
@@ -272,7 +280,7 @@ export class HeartbeatService {
                 if (!this.pendingLimitOrders.has(orderKey)) {
                     this.pendingLimitOrders.set(orderKey, {
                         symbol, token: contract.token, tradingSymbol: contract.tradingSymbol,
-                        type, qty: contract.lotSize, midPrice, orderType: 'BUY',
+                        type, qty: tradeQty, midPrice, orderType: 'BUY',
                         placedAt: Date.now(), targetPrice, slPrice, strategyName
                     });
                     this.logger.log(`📋 GANN_ANGLE LIMIT BUY: [${symbol}] ${type} at mid ₹${midPrice} (bid ₹${optionPremiumInfo.bidPrice} / ask ₹${optionPremiumInfo.askPrice}). 2-min fill window.`);
