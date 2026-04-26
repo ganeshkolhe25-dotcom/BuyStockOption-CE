@@ -100,10 +100,10 @@ export class Ema5Service {
         // ── PE Setup: alert candle CLOSES above EMA (wick may cross — close is the signal) ──
         if (alertClose > emaAtAlert) {
             if (actLow < alertLow) {
-                // RSI > 60 confirms price is overbought/overstretched above EMA
-                if (latestRsi !== null && latestRsi < 60) {
+                // RSI > 50 confirms price is above midpoint — overstretched above EMA
+                if (latestRsi !== null && latestRsi < 50) {
                     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
-                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be >60 for PE (overbought)` };
+                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be >50 for PE (above midpoint)` };
                 }
                 if (!volumeSurge) {
                     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
@@ -128,10 +128,10 @@ export class Ema5Service {
         // ── CE Setup: alert candle CLOSES below EMA (wick may cross — close is the signal) ──
         if (alertClose < emaAtAlert) {
             if (actHigh > alertHigh) {
-                // RSI < 40 confirms price is oversold/overstretched below EMA
-                if (latestRsi !== null && latestRsi > 40) {
+                // RSI < 50 confirms price is below midpoint — overstretched below EMA
+                if (latestRsi !== null && latestRsi > 50) {
                     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
-                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be <40 for CE (oversold)` };
+                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be <50 for CE (below midpoint)` };
                 }
                 if (!volumeSurge) {
                     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,

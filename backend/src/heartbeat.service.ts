@@ -268,13 +268,16 @@ export class HeartbeatService {
                         ? (cfg.candleNiftyLots || 1)
                         : (cfg.candleBankNiftyLots || 1);
                     tradeQty = contract.lotSize * lotMultiplier;
-                }
-                const lotValue = tradeQty * midPrice;
-                if (lotValue > 40000) {
-                    const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Mid: ₹${midPrice}, Qty: ${tradeQty})`;
-                    this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
-                    this.logger.warn(failMsg);
-                    return;
+                    // For CANDLE_BREAKOUT, user explicitly configured lot count → capital check
+                    // in paper.service.placeBuyOrder() is the real guard. Skip per-lot cap here.
+                } else {
+                    const lotValue = tradeQty * midPrice;
+                    if (lotValue > 40000) {
+                        const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Mid: ₹${midPrice}, Qty: ${tradeQty})`;
+                        this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
+                        this.logger.warn(failMsg);
+                        return;
+                    }
                 }
                 const orderKey = `BUY:${contract.token}`;
                 if (!this.pendingLimitOrders.has(orderKey)) {

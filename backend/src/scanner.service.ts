@@ -467,7 +467,7 @@ export class ScannerService implements OnModuleInit {
      *   above range high (+0.1%) → CE entry. Below range low (-0.1%) → PE entry.
      *   SL = opposite side of range. Target = entry ± range width (1:1 R:R).
      */
-    @Cron('0 * * * * *', { timeZone: 'Asia/Kolkata' })
+    @Cron('0 * * * * 1-5', { timeZone: 'Asia/Kolkata' })
     async runCandleBreakoutScan() {
         const timeStr = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
         if (timeStr < '09:18:00' || timeStr > '09:45:00') return;
