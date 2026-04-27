@@ -17,6 +17,7 @@ import os, sys, time, json, hashlib
 import requests
 import pyotp
 from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -182,25 +183,45 @@ def fast_fill(element, value):
 
 # ── Chrome setup ───────────────────────────────────────────────────────────────
 options = webdriver.ChromeOptions()
-options.add_argument("--headless=new")
+# Use legacy --headless (not --headless=new) — the new mode crashes in Docker
+# due to GPU/shared-memory constraints even with --disable-dev-shm-usage.
+options.add_argument("--headless")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
 options.add_argument("--disable-gpu")
+options.add_argument("--disable-software-rasterizer")
+options.add_argument("--disable-extensions")
+options.add_argument("--no-first-run")
 options.add_argument("--window-size=1920,1080")
 options.add_argument("--disable-setuid-sandbox")
 options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
-for p in ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']:
+CHROME_BINARIES = ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome']
+CHROMEDRIVER_PATHS = ['/usr/bin/chromedriver', '/usr/lib/chromium/chromedriver',
+                      '/usr/lib/chromium-browser/chromedriver', '/usr/local/bin/chromedriver']
+
+for p in CHROME_BINARIES:
     if os.path.exists(p):
         options.binary_location = p
         print(f"[DEBUG] Using Chrome binary: {p}", flush=True)
         break
 
+chromedriver_path = None
+for p in CHROMEDRIVER_PATHS:
+    if os.path.exists(p):
+        chromedriver_path = p
+        print(f"[DEBUG] Using chromedriver: {p}", flush=True)
+        break
+
+if not chromedriver_path:
+    print("[DEBUG] chromedriver not found at known paths — letting Selenium locate it", flush=True)
+
 auth_code = None
 direct_token = None  # susertoken captured directly from network/localStorage
 
 try:
-    driver = webdriver.Chrome(options=options)
+    service = Service(chromedriver_path) if chromedriver_path else Service()
+    driver = webdriver.Chrome(service=service, options=options)
     wait = WebDriverWait(driver, 30)
 
     print(f"[DEBUG] Navigating to: {LOGIN_URL}", flush=True)
