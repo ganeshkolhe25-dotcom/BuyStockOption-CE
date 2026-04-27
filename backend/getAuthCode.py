@@ -115,21 +115,31 @@ def scan_network_for_code(driver):
 
 
 def get_token_from_localstorage(driver):
-    """Try to extract susertoken from browser localStorage after login."""
+    """Try to extract susertoken from browser localStorage/sessionStorage/cookies after login."""
     try:
-        keys_to_try = ["susertoken", "jKey", "sessionToken", "access_token", "token", "stoken"]
+        keys_to_try = ["susertoken", "jKey", "sessionToken", "access_token", "token", "stoken", "authToken", "userToken"]
         for key in keys_to_try:
             token = driver.execute_script(f"return localStorage.getItem('{key}');")
             if token and len(str(token)) > 20:
                 print(f"[DEBUG] Found token in localStorage['{key}']", flush=True)
                 return str(token)
 
-        # Try sessionStorage too
         for key in keys_to_try:
             token = driver.execute_script(f"return sessionStorage.getItem('{key}');")
             if token and len(str(token)) > 20:
                 print(f"[DEBUG] Found token in sessionStorage['{key}']", flush=True)
                 return str(token)
+
+        # Check cookies
+        cookies = driver.get_cookies()
+        for c in cookies:
+            if c['name'].lower() in [k.lower() for k in keys_to_try]:
+                if len(c.get('value', '')) > 20:
+                    print(f"[DEBUG] Found token in cookie['{c['name']}']", flush=True)
+                    return c['value']
+        if cookies:
+            readable = [(c['name'], c['value'][:40]) for c in cookies if len(c.get('value', '')) > 5]
+            print(f"[DEBUG] Cookies: {readable}", flush=True)
 
         # Dump all localStorage keys for debugging
         all_keys = driver.execute_script("return Object.keys(localStorage);")
@@ -244,7 +254,25 @@ try:
     wait.until(EC.element_to_be_clickable((By.XPATH, "//button[normalize-space()='LOGIN']"))).click()
     print("[DEBUG] Login button clicked, scanning for token/code...", flush=True)
 
+    # Wait briefly and print page state so we can diagnose login success/failure
+    time.sleep(3)
+    try:
+        post_click_url = driver.current_url
+        post_click_title = driver.title
+        print(f"[DEBUG] Post-login URL: {post_click_url[:120]}", flush=True)
+        print(f"[DEBUG] Post-login title: {post_click_title}", flush=True)
+        # Look for error messages on the page
+        err_els = driver.find_elements(By.CSS_SELECTOR,
+            "[class*='error' i], [class*='alert' i], [class*='invalid' i], [id*='error' i]")
+        for el in err_els[:3]:
+            txt = el.text.strip()
+            if txt:
+                print(f"[DEBUG] Page error element: {txt[:120]}", flush=True)
+    except Exception as diag_err:
+        print(f"[DEBUG] Post-login diagnostic error: {diag_err}", flush=True)
+
     start = time.time()
+    last_ls_check = 0.0  # absolute time of last localStorage check
     while True:
         # Priority 1: direct susertoken from network traffic
         direct_token = scan_network_for_susertoken(driver)
@@ -263,8 +291,9 @@ try:
                 print(f"[DEBUG] Found direct token after auth code!", flush=True)
             break
 
-        # Periodically check localStorage too (some flows store token there early)
-        if (time.time() - start) % 10 < 0.6:
+        # Check localStorage/cookies every 10 seconds (use absolute timer, not modulo)
+        if time.time() - last_ls_check >= 10:
+            last_ls_check = time.time()
             ls_token = get_token_from_localstorage(driver)
             if ls_token:
                 direct_token = ls_token
@@ -276,6 +305,7 @@ try:
                 # Only re-fill if still on the login page (URL unchanged)
                 try:
                     current_url = driver.current_url
+                    print(f"[DEBUG] 60s timeout — URL: {current_url[:120]}", flush=True)
                     if "investor-entry-level/login" in current_url:
                         all_inp = driver.find_elements(By.CSS_SELECTOR, "input:not([type='hidden']):not([type='checkbox']):not([type='radio'])")
                         vis_inp = [i for i in all_inp if i.is_displayed()]
