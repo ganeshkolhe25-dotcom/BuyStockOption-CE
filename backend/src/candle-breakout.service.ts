@@ -225,47 +225,8 @@ export class CandleBreakoutService {
                 }))
                 .sort((a, b) => a.time - b.time); // oldest first
 
-            // Need ≥3 candles: first to skip (9:15–9:16) + at least one pair
-            if (todayCandles.length < 3) return;
-
-            // ── Gap + volatility filters ──────────────────────────────────────
-            const firstCandle = todayCandles[0]; // 9:15 candle
-            const firstCandleRange = firstCandle.high - firstCandle.low;
-
-            // Filter 1: 9:15 candle range > 0.40% of open → market opened too chaotic
-            const rangeThreshold = parseFloat((firstCandle.open * 0.004).toFixed(2));
-            if (firstCandleRange > rangeThreshold) {
-                this.skippedSymbols.set(symbol, `9:15 candle range ${firstCandleRange.toFixed(0)}pts > ${rangeThreshold.toFixed(0)} (0.40%)`);
-                this.logger.warn(
-                    `🚫 [${symbol}] SKIP: 9:15 candle range ₹${firstCandleRange.toFixed(0)}pts > ${rangeThreshold.toFixed(0)}pts (0.40%) — too volatile. No trade today.`
-                );
-                return;
-            }
-
-            // Filter 2: Gap from previous close > 0.80% → big move already done before open
-            try {
-                const quotes = await this.shoonya.getMultiQuotes('NSE', [token]);
-                if (quotes.length > 0 && quotes[0]?.pc) {
-                    const prevClose = parseFloat(quotes[0].pc);
-                    const gapPts = Math.abs(firstCandle.open - prevClose);
-                    const gapThreshold = parseFloat((prevClose * 0.008).toFixed(2));
-                    const cautionThreshold = parseFloat((prevClose * 0.004).toFixed(2));
-                    if (gapPts > gapThreshold) {
-                        this.skippedSymbols.set(symbol, `Gap ${gapPts.toFixed(0)}pts > ${gapThreshold.toFixed(0)} (0.80%) — move already done`);
-                        this.logger.warn(
-                            `🚫 [${symbol}] SKIP: Gap ₹${gapPts.toFixed(0)}pts > ${gapThreshold.toFixed(0)}pts (0.80%) — big move done before open. No trade today.`
-                        );
-                        return;
-                    } else if (gapPts > cautionThreshold) {
-                        this.logger.warn(
-                            `⚠️  [${symbol}] Gap ₹${gapPts.toFixed(0)}pts (0.40–0.80% range) — proceed with caution.`
-                        );
-                    }
-                }
-            } catch (err: any) {
-                this.logger.debug(`[${symbol}] Gap check skipped: ${err.message}`);
-            }
-            // ─────────────────────────────────────────────────────────────────
+            // Need ≥2 candles: first to skip (9:15–9:16) + at least one pair
+            if (todayCandles.length < 2) return;
 
             // Skip the very first candle (9:15–9:16 AM — too volatile)
             const validCandles = todayCandles.slice(1);
