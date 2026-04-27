@@ -40,7 +40,65 @@ export class CandleBreakoutService {
     // Symbols intentionally skipped today due to gap/volatility filters
     private readonly skippedSymbols = new Map<string, string>(); // symbol → reason
 
+    // Called immediately when a breakout fires on a tick
+    private onBreakout: ((setup: CandleSetup) => void) | null = null;
+
     constructor(private readonly shoonya: ShoonyaService) {}
+
+    /**
+     * Register the callback that fires the moment a breakout/breakdown is detected
+     * on a live WebSocket tick. Called once by ScannerService at startup.
+     */
+    setBreakoutHandler(handler: (setup: CandleSetup) => void): void {
+        this.onBreakout = handler;
+    }
+
+    /**
+     * Subscribe NIFTY and BANKNIFTY ticks so breakouts fire the instant LTP crosses
+     * rangeHigh + 5 (CE) or rangeLow - 5 (PE). Call once after setBreakoutHandler().
+     */
+    startTickWatch(): void {
+        for (const inst of INSTRUMENTS) {
+            this.shoonya.registerTickCallback(inst.token, (ltp) => this.onTick(inst.token, ltp));
+        }
+    }
+
+    private onTick(token: string, ltp: number): void {
+        const inst = INSTRUMENTS.find(i => i.token === token);
+        if (!inst) return;
+        const setup = this.setups.get(inst.symbol);
+        if (!setup || setup.signal !== 'PENDING') return;
+
+        const BUFFER = 5; // fixed 5-point buffer (replaces stale 0.1% ≈ 24 pts)
+
+        if (ltp > setup.rangeHigh + BUFFER) {
+            const entryPrice = setup.rangeHigh + BUFFER;
+            const slDist = entryPrice - setup.rangeLow;
+            setup.signal = 'CE';
+            setup.breakoutPrice = entryPrice;
+            setup.breakoutAt = Date.now();
+            setup.entryTargetPrice = parseFloat((entryPrice + 2 * slDist).toFixed(2));
+            setup.entrySlPrice = parseFloat(setup.rangeLow.toFixed(2));
+            this.logger.log(
+                `📈 2-CANDLE CE: [${inst.symbol}] LTP ₹${ltp} > high ₹${setup.rangeHigh.toFixed(2)} + 5pt ` +
+                `→ entry ₹${entryPrice} | Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
+            );
+            if (this.onBreakout) this.onBreakout(setup);
+        } else if (ltp < setup.rangeLow - BUFFER) {
+            const entryPrice = setup.rangeLow - BUFFER;
+            const slDist = setup.rangeHigh - entryPrice;
+            setup.signal = 'PE';
+            setup.breakoutPrice = entryPrice;
+            setup.breakoutAt = Date.now();
+            setup.entryTargetPrice = parseFloat((entryPrice - 2 * slDist).toFixed(2));
+            setup.entrySlPrice = parseFloat(setup.rangeHigh.toFixed(2));
+            this.logger.log(
+                `📉 2-CANDLE PE: [${inst.symbol}] LTP ₹${ltp} < low ₹${setup.rangeLow.toFixed(2)} - 5pt ` +
+                `→ entry ₹${entryPrice} | Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
+            );
+            if (this.onBreakout) this.onBreakout(setup);
+        }
+    }
 
     /**
      * Scan NIFTY and BANKNIFTY for their 2-candle morning setup.
