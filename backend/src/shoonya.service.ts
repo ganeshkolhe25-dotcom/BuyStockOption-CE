@@ -293,29 +293,39 @@ export class ShoonyaService implements OnModuleInit {
     }
 
     /**
-     * Daily 9:00 AM token refresh — runs getAuthCode.py via headless Chrome
-     * before the market opens, ensuring a valid session is ready by 9:20 AM scan.
-     * Shoonya requires a fresh OAuth web login every morning.
+     * Daily 9:00 AM token refresh.
+     * Order: QuickAuth first (no browser dependency), Chrome as fallback.
+     * This way a Chrome/chromedriver failure never blocks the morning session.
      */
     @Cron('0 09 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async dailyTokenRefresh() {
-        this.logger.log('⏰ 9:00 AM Daily Token Refresh — running getAuthCode.py...');
-        this.sessionToken = null; // Force fresh login, don't reuse yesterday's token
+        this.logger.log('⏰ 9:00 AM Daily Token Refresh starting...');
+
+        // Clear in-memory + DB token so authenticate() goes straight to QuickAuth
+        this.sessionToken = null;
+        try {
+            const cfg = await this.prisma.shoonyaConfig.findFirst();
+            if (cfg) await this.prisma.shoonyaConfig.update({ where: { id: cfg.id }, data: { sessionToken: '' } });
+        } catch { /* non-fatal */ }
+
+        // 1️⃣ QuickAuth — single HTTP POST, no browser required
+        this.logger.log('🔑 Step 1: Attempting QuickAuth (no Chrome)...');
+        const quickAuthOk = await this.authenticate();
+        if (quickAuthOk && this.sessionToken) {
+            this.logger.log('✅ Daily token refresh via QuickAuth succeeded.');
+            if (this.onSessionRefreshed) await this.onSessionRefreshed();
+            return;
+        }
+
+        // 2️⃣ QuickAuth failed — fall back to Chrome headless login
+        this.logger.warn('⚠️ QuickAuth failed. Falling back to Chrome auto-connect...');
         const result = await this.autoConnect();
         if (result.success) {
-            this.logger.log('✅ Daily token refresh succeeded. Triggering NSE token resolution...');
+            this.logger.log('✅ Daily token refresh via Chrome succeeded.');
         } else {
-            this.logger.warn(`⚠️ autoConnect failed (${result.message}). Falling back to QuickAuth...`);
-            // Wipe the stale DB token so authenticate() falls through to QuickAuth
-            // (otherwise it loads yesterday's expired token and returns true without re-authing)
-            try {
-                const cfg = await this.prisma.shoonyaConfig.findFirst();
-                if (cfg) await this.prisma.shoonyaConfig.update({ where: { id: cfg.id }, data: { sessionToken: '' } });
-            } catch { /* non-fatal */ }
-            await this.authenticate();
+            this.logger.error(`❌ Both QuickAuth and Chrome failed: ${result.message}`);
         }
-        // Fire the NseService token refresh immediately after getting a fresh session
-        // (rather than waiting for the 9:10 AM cron, which is a safety-net fallback)
+
         if (this.onSessionRefreshed) {
             this.logger.log('🔄 Calling registered NSE token refresh hook...');
             await this.onSessionRefreshed();
