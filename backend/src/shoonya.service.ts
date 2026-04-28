@@ -47,7 +47,6 @@ export class ShoonyaService implements OnModuleInit {
     // ── WebSocket tick feed ────────────────────────────────────────────────
     private ws: WebSocket | null = null;
     private readonly tickCache = new Map<string, number>(); // NSE token → latest LTP
-    private readonly tickCallbacks = new Map<string, Array<(ltp: number) => void>>(); // token → handlers
     private wsShouldRun = false;
     private wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
     private wsHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -881,10 +880,7 @@ export class ShoonyaService implements OnModuleInit {
                 } else if (msg.t === 'tk' || msg.t === 'tf' || msg.t === 'dk') {
                     // tk = initial full tick on subscribe, tf = subsequent changed fields, dk = depth
                     if (msg.tk && msg.lp) {
-                        const ltp = parseFloat(msg.lp);
-                        this.tickCache.set(msg.tk, ltp);
-                        const cbs = this.tickCallbacks.get(msg.tk);
-                        if (cbs) cbs.forEach(cb => { try { cb(ltp); } catch { } });
+                        this.tickCache.set(msg.tk, parseFloat(msg.lp));
                     }
                 }
             } catch { /* ignore malformed frames */ }
@@ -930,12 +926,6 @@ export class ShoonyaService implements OnModuleInit {
         return this.tickCache.get(token) ?? null;
     }
 
-    /** Register a callback that fires on every tick for the given token */
-    registerTickCallback(token: string, callback: (ltp: number) => void): void {
-        const list = this.tickCallbacks.get(token) ?? [];
-        list.push(callback);
-        this.tickCallbacks.set(token, list);
-    }
 
     /** Close WS, clear tick cache, and cancel pending reconnect (e.g. EOD) */
     disconnectTickFeed(): void {

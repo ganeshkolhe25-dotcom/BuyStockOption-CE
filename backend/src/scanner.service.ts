@@ -9,7 +9,7 @@ import { Ema5Service } from './ema5.service';
 import { HeartbeatService } from './heartbeat.service';
 import { PaperTradingService } from './paper.service';
 import { PrismaService } from './prisma.service';
-import { CandleBreakoutService, CandleSetup } from './candle-breakout.service';
+import { CandleBreakoutService } from './candle-breakout.service';
 
 @Injectable()
 export class ScannerService implements OnModuleInit {
@@ -28,12 +28,6 @@ export class ScannerService implements OnModuleInit {
     ) { }
 
     async onModuleInit() {
-        // Wire up the 2-candle breakout handler before any ticks arrive
-        this.candleBreakout.setBreakoutHandler((setup) => {
-            this.executeCandleBreakoutTrade(setup);
-        });
-        this.candleBreakout.startTickWatch();
-
         const cached = await this.cacheManager.get<string>('DAILY_SCAN_RESULTS');
         if (!cached) {
             const now = new Date();
@@ -51,24 +45,6 @@ export class ScannerService implements OnModuleInit {
             } else {
                 this.logger.log('No cached scan results found on startup. Waiting for 9:25 AM IST to run initial market scan.');
             }
-        }
-    }
-
-    private async executeCandleBreakoutTrade(setup: CandleSetup): Promise<void> {
-        try {
-            const todayTraded = await this.paperTrading.getTodayTradedSymbols('CANDLE_BREAKOUT');
-            if (todayTraded.includes(setup.symbol)) return;
-
-            await this.heartbeatService.addToWatchlist(
-                setup.symbol,
-                setup.breakoutPrice!,
-                setup.signal as 'CE' | 'PE',
-                setup.entryTargetPrice!,
-                setup.entrySlPrice!,
-                'CANDLE_BREAKOUT',
-            );
-        } catch (err: any) {
-            this.logger.error(`[2-Candle] Trade execution failed for ${setup.symbol}: ${err.message}`);
         }
     }
 
@@ -481,9 +457,9 @@ export class ScannerService implements OnModuleInit {
     }
 
     /**
-     * 2-Candle Breakout Scanner — Phase 1 only (9:18–9:45 AM IST, Mon-Fri).
-     * Detects the first red+green or green+red 1-min candle pair for NIFTY/BANKNIFTY.
-     * Breakout detection (Phase 2) runs on every WebSocket tick via onTick() — no polling delay.
+     * Phase 1 — pair detection (every minute, 9:18–9:45 AM IST, Mon-Fri).
+     * Fetches 1-min candles and stores the first valid red+green pair as PENDING.
+     * Stops scanning once both NIFTY and BANKNIFTY have a setup.
      */
     @Cron('0 * * * * 1-5', { timeZone: 'Asia/Kolkata' })
     async runCandleBreakoutScan() {
@@ -491,6 +467,44 @@ export class ScannerService implements OnModuleInit {
         if (timeStr < '09:18:00' || timeStr > '09:45:00') return;
 
         await this.candleBreakout.scanForSetups();
+    }
+
+    /**
+     * Phase 2 — breakout check (every 15 seconds, 9:18–9:45 AM IST, Mon-Fri).
+     * Runs only when at least one PENDING setup exists.
+     * Fetches live NIFTY/BANKNIFTY LTP via REST and fires trade if:
+     *   LTP > rangeHigh + 5 → CE entry at rangeHigh + 5
+     *   LTP < rangeLow  - 5 → PE entry at rangeLow  - 5
+     */
+    @Cron('*/15 * * * * 1-5', { timeZone: 'Asia/Kolkata' })
+    async runCandleBreakoutCheck() {
+        const timeStr = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+        if (timeStr < '09:18:00' || timeStr > '09:45:00') return;
+
+        // Fast exit if no PENDING setups exist
+        const pendingSetups = this.candleBreakout.getSetups().filter(s => s.signal === 'PENDING');
+        if (pendingSetups.length === 0) return;
+
+        const ltpMap = await this.candleBreakout.fetchLtpMap();
+        const triggered = this.candleBreakout.checkBreakouts(ltpMap);
+
+        for (const setup of triggered) {
+            try {
+                const todayTraded = await this.paperTrading.getTodayTradedSymbols('CANDLE_BREAKOUT');
+                if (todayTraded.includes(setup.symbol)) continue;
+
+                await this.heartbeatService.addToWatchlist(
+                    setup.symbol,
+                    setup.breakoutPrice!,
+                    setup.signal as 'CE' | 'PE',
+                    setup.entryTargetPrice!,
+                    setup.entrySlPrice!,
+                    'CANDLE_BREAKOUT',
+                );
+            } catch (err: any) {
+                this.logger.error(`[2-Candle] Trade execution failed for ${setup.symbol}: ${err.message}`);
+            }
+        }
     }
 
     /** EOD cleanup: clear candle setups so they don't carry over to next day */

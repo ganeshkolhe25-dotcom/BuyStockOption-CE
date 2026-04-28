@@ -40,65 +40,7 @@ export class CandleBreakoutService {
     // Symbols intentionally skipped today due to gap/volatility filters
     private readonly skippedSymbols = new Map<string, string>(); // symbol → reason
 
-    // Called immediately when a breakout fires on a tick
-    private onBreakout: ((setup: CandleSetup) => void) | null = null;
-
     constructor(private readonly shoonya: ShoonyaService) {}
-
-    /**
-     * Register the callback that fires the moment a breakout/breakdown is detected
-     * on a live WebSocket tick. Called once by ScannerService at startup.
-     */
-    setBreakoutHandler(handler: (setup: CandleSetup) => void): void {
-        this.onBreakout = handler;
-    }
-
-    /**
-     * Subscribe NIFTY and BANKNIFTY ticks so breakouts fire the instant LTP crosses
-     * rangeHigh + 5 (CE) or rangeLow - 5 (PE). Call once after setBreakoutHandler().
-     */
-    startTickWatch(): void {
-        for (const inst of INSTRUMENTS) {
-            this.shoonya.registerTickCallback(inst.token, (ltp) => this.onTick(inst.token, ltp));
-        }
-    }
-
-    private onTick(token: string, ltp: number): void {
-        const inst = INSTRUMENTS.find(i => i.token === token);
-        if (!inst) return;
-        const setup = this.setups.get(inst.symbol);
-        if (!setup || setup.signal !== 'PENDING') return;
-
-        const BUFFER = 5; // fixed 5-point buffer (replaces stale 0.1% ≈ 24 pts)
-
-        if (ltp > setup.rangeHigh + BUFFER) {
-            const entryPrice = setup.rangeHigh + BUFFER;
-            const slDist = entryPrice - setup.rangeLow;
-            setup.signal = 'CE';
-            setup.breakoutPrice = entryPrice;
-            setup.breakoutAt = Date.now();
-            setup.entryTargetPrice = parseFloat((entryPrice + 2 * slDist).toFixed(2));
-            setup.entrySlPrice = parseFloat(setup.rangeLow.toFixed(2));
-            this.logger.log(
-                `📈 2-CANDLE CE: [${inst.symbol}] LTP ₹${ltp} > high ₹${setup.rangeHigh.toFixed(2)} + 5pt ` +
-                `→ entry ₹${entryPrice} | Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
-            );
-            if (this.onBreakout) this.onBreakout(setup);
-        } else if (ltp < setup.rangeLow - BUFFER) {
-            const entryPrice = setup.rangeLow - BUFFER;
-            const slDist = setup.rangeHigh - entryPrice;
-            setup.signal = 'PE';
-            setup.breakoutPrice = entryPrice;
-            setup.breakoutAt = Date.now();
-            setup.entryTargetPrice = parseFloat((entryPrice - 2 * slDist).toFixed(2));
-            setup.entrySlPrice = parseFloat(setup.rangeHigh.toFixed(2));
-            this.logger.log(
-                `📉 2-CANDLE PE: [${inst.symbol}] LTP ₹${ltp} < low ₹${setup.rangeLow.toFixed(2)} - 5pt ` +
-                `→ entry ₹${entryPrice} | Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
-            );
-            if (this.onBreakout) this.onBreakout(setup);
-        }
-    }
 
     /**
      * Scan NIFTY and BANKNIFTY for their 2-candle morning setup.
@@ -119,25 +61,17 @@ export class CandleBreakoutService {
     }
 
     /**
-     * Fetch current LTP for all PENDING setups using the NSE exchange (not NFO).
-     * NIFTY/BANKNIFTY are index tokens on NSE — getOptionQuote() would use NFO which fails.
-     * Reads from the WS tick cache first; falls back to REST GetQuotes with exch=NSE.
+     * Fetch live LTP for all PENDING setups via REST (NSE exchange).
+     * NIFTY/BANKNIFTY are index tokens on NSE — must use NSE, not NFO.
+     * REST is used directly; WS tick cache is unreliable for index tokens due to
+     * Shoonya's ~100-subscription limit which pushes indices past the active window.
      */
     async fetchLtpMap(): Promise<Record<string, number>> {
         const ltpMap: Record<string, number> = {};
         for (const inst of INSTRUMENTS) {
             if (!this.setups.has(inst.symbol)) continue;
-            const setup = this.setups.get(inst.symbol)!;
-            if (setup.signal !== 'PENDING') continue;
+            if (this.setups.get(inst.symbol)!.signal !== 'PENDING') continue;
 
-            // WS tick cache (subscribed at startup via nse.service refreshSecurityTokens)
-            const tick = this.shoonya.getTickPrice(inst.token);
-            if (tick !== null) {
-                ltpMap[inst.symbol] = tick;
-                continue;
-            }
-
-            // REST fallback: correct exchange is NSE, not NFO
             const results = await this.shoonya.getMultiQuotes('NSE', [inst.token]);
             if (results.length > 0 && results[0].lp) {
                 ltpMap[inst.symbol] = parseFloat(results[0].lp);
@@ -148,41 +82,43 @@ export class CandleBreakoutService {
 
     /**
      * Check all PENDING setups for a breakout/breakdown using the latest LTP map.
+     * Entry price is pinned at rangeHigh + 5 (CE) or rangeLow - 5 (PE).
      * Returns setups that just triggered (signal changed from PENDING → CE/PE).
      */
     checkBreakouts(ltpMap: Record<string, number>): CandleSetup[] {
         const triggered: CandleSetup[] = [];
+        const BUFFER = 5; // fixed 5-point buffer
 
         for (const [symbol, setup] of this.setups) {
             if (setup.signal !== 'PENDING') continue;
             const ltp = ltpMap[symbol];
             if (!ltp) continue;
 
-            const buffer = setup.rangeHigh * 0.001; // 0.1% buffer to avoid noise
-
-            if (ltp > setup.rangeHigh + buffer) {
-                const slDist = ltp - setup.rangeLow;           // distance from entry to SL
+            if (ltp > setup.rangeHigh + BUFFER) {
+                const entryPrice = setup.rangeHigh + BUFFER;
+                const slDist = entryPrice - setup.rangeLow;
                 setup.signal = 'CE';
-                setup.breakoutPrice = ltp;
+                setup.breakoutPrice = entryPrice;
                 setup.breakoutAt = Date.now();
-                setup.entryTargetPrice = parseFloat((ltp + 2 * slDist).toFixed(2)); // 2:1 R:R target
-                setup.entrySlPrice = parseFloat(setup.rangeLow.toFixed(2));          // SL = range low
+                setup.entryTargetPrice = parseFloat((entryPrice + 2 * slDist).toFixed(2));
+                setup.entrySlPrice = parseFloat(setup.rangeLow.toFixed(2));
                 triggered.push(setup);
                 this.logger.log(
-                    `📈 2-CANDLE CE: [${symbol}] ₹${ltp} > range high ₹${setup.rangeHigh.toFixed(2)} ` +
-                    `→ SL dist ${slDist.toFixed(1)}pts → Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
+                    `📈 2-CANDLE CE: [${symbol}] LTP ₹${ltp} > high ₹${setup.rangeHigh.toFixed(2)} + 5pt ` +
+                    `→ entry ₹${entryPrice} | Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
                 );
-            } else if (ltp < setup.rangeLow - buffer) {
-                const slDist = setup.rangeHigh - ltp;          // distance from entry to SL
+            } else if (ltp < setup.rangeLow - BUFFER) {
+                const entryPrice = setup.rangeLow - BUFFER;
+                const slDist = setup.rangeHigh - entryPrice;
                 setup.signal = 'PE';
-                setup.breakoutPrice = ltp;
+                setup.breakoutPrice = entryPrice;
                 setup.breakoutAt = Date.now();
-                setup.entryTargetPrice = parseFloat((ltp - 2 * slDist).toFixed(2)); // 2:1 R:R target
-                setup.entrySlPrice = parseFloat(setup.rangeHigh.toFixed(2));         // SL = range high
+                setup.entryTargetPrice = parseFloat((entryPrice - 2 * slDist).toFixed(2));
+                setup.entrySlPrice = parseFloat(setup.rangeHigh.toFixed(2));
                 triggered.push(setup);
                 this.logger.log(
-                    `📉 2-CANDLE PE: [${symbol}] ₹${ltp} < range low ₹${setup.rangeLow.toFixed(2)} ` +
-                    `→ SL dist ${slDist.toFixed(1)}pts → Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
+                    `📉 2-CANDLE PE: [${symbol}] LTP ₹${ltp} < low ₹${setup.rangeLow.toFixed(2)} - 5pt ` +
+                    `→ entry ₹${entryPrice} | Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
                 );
             }
         }
