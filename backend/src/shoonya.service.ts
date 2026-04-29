@@ -790,8 +790,8 @@ export class ShoonyaService implements OnModuleInit {
                 error.response?.status === 401 ||
                 (responseData?.emsg && responseData.emsg.toLowerCase().includes('session'));
 
-            // Session expired — use OAuth auto-connect (not QuickAuth which may be broken).
-            // Rate-limited: only one autoConnect attempt per 3 minutes to prevent cascading loops
+            // Session expired — try QuickAuth first (no browser), Chrome as fallback.
+            // Rate-limited: only one re-auth attempt per 3 minutes to prevent cascading loops
             // when the whole token batch fails simultaneously.
             const nowMs = Date.now();
             const autoConnectCooldownMs = 3 * 60 * 1000; // 3 minutes
@@ -799,18 +799,27 @@ export class ShoonyaService implements OnModuleInit {
                 nowMs - this.lastAutoConnectMs > autoConnectCooldownMs) {
                 this.sessionClearInProgress = true;
                 this.lastAutoConnectMs = nowMs;
-                this.logger.warn(`Session expired (401) on SearchScrip [${symbol}]. Attempting OAuth auto-connect...`);
-                const savedToken = this.sessionToken;
-                this.sessionToken = null; // force autoConnect to fetch fresh
-                const result = await this.autoConnect();
+                this.logger.warn(`Session expired (401) on SearchScrip [${symbol}]. Attempting QuickAuth re-auth...`);
+                // Clear token so authenticate() skips DB cache and goes straight to QuickAuth
+                this.sessionToken = null;
+                try {
+                    const cfg = await this.prisma.shoonyaConfig.findFirst();
+                    if (cfg) await this.prisma.shoonyaConfig.update({ where: { id: cfg.id }, data: { sessionToken: '' } });
+                } catch { /* non-fatal */ }
+                const quickAuthOk = await this.authenticate();
                 this.sessionClearInProgress = false;
-                if (result.success) {
-                    this.logger.log(`Re-auth via autoConnect succeeded. Retrying SearchScrip for ${symbol}...`);
+                if (quickAuthOk && this.sessionToken) {
+                    this.logger.log(`Re-auth via QuickAuth succeeded. Retrying SearchScrip for ${symbol}...`);
                     return this.searchSecurityToken(symbol, exch, false);
                 }
-                // autoConnect also failed — restore the old token so other APIs aren't broken
-                this.logger.error(`autoConnect re-auth failed: ${result.message}. Restoring previous token.`);
-                this.sessionToken = savedToken;
+                // QuickAuth failed — fall back to Chrome (may not be available)
+                this.logger.warn(`QuickAuth failed on 401 recovery. Trying Chrome auto-connect...`);
+                const result = await this.autoConnect();
+                if (result.success) {
+                    this.logger.log(`Re-auth via Chrome succeeded. Retrying SearchScrip for ${symbol}...`);
+                    return this.searchSecurityToken(symbol, exch, false);
+                }
+                this.logger.error(`All re-auth methods failed: ${result.message}. SearchScrip skipped.`);
                 return null;
             }
 

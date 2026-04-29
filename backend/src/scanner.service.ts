@@ -104,7 +104,14 @@ export class ScannerService implements OnModuleInit {
             try {
                 const universe = await this.nseService.buildEma5Universe();
                 await this.cacheManager.set('EMA5_UNIVERSE', JSON.stringify(universe), 43200000);
-                this.logger.log(`✅ 5 EMA Universe cached: ${universe.length} stocks (Nifty 100, ₹500–₹40,000, ADX ≥ 18).`);
+                this.logger.log(`✅ 5 EMA Universe cached: ${universe.length} stocks (ADX<25, ATR%>1.5%, RSI extreme).`);
+
+                // Subscribe filtered EMA universe to WS — these are the only stocks
+                // the 5-EMA scanner will monitor intraday, keeping total subscriptions < 100
+                if (universe.length > 0) {
+                    this.nseService.subscribeForLiveFeed(universe);
+                    this.logger.log(`[WS] Subscribed ${universe.length} EMA universe stocks to tick feed.`);
+                }
             } catch (err: any) {
                 this.logger.warn(`[5 EMA] Universe build failed — will fall back to static list: ${err.message}`);
             }
@@ -159,8 +166,10 @@ export class ScannerService implements OnModuleInit {
                 // Price filter: options must be liquid and tradeable
                 if (ltp < 500 || ltp > 40000) continue;
 
-                const isCeMomentum = pChange > 1.0 && openChange > 0 && rangePosition > 0.60 && dayRangePct > 0.8;
-                const isPeMomentum = pChange < -1.0 && openChange < 0 && rangePosition < 0.40 && dayRangePct > 0.8;
+                // dayRangePct > 1.2% acts as intraday ATR proxy — confirms the stock
+                // has enough expansion to make the 1x1 angle cross profitable
+                const isCeMomentum = pChange > 1.0 && openChange > 0 && rangePosition > 0.60 && dayRangePct > 1.2;
+                const isPeMomentum = pChange < -1.0 && openChange < 0 && rangePosition < 0.40 && dayRangePct > 1.2;
 
                 if (!isCeMomentum && !isPeMomentum) continue;
 

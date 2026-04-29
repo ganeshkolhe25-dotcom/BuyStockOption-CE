@@ -1,17 +1,16 @@
 FROM node:20-slim
 
-# Install system deps: OpenSSL for Prisma, Chromium + Python for auto-connect
-RUN apt-get update -y && apt-get install -y \
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Essential packages only — no Chromium (QuickAuth uses REST, no browser needed)
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
     openssl \
     python3 \
-    python3-pip \
-    chromium \
-    chromium-driver \
-    --no-install-recommends && \
+    python3-pip && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python selenium deps
-RUN pip3 install selenium pyotp requests --break-system-packages
+# Install Python deps for QuickAuth (pyotp/requests) only — no selenium
+RUN pip3 install pyotp requests --break-system-packages
 
 WORKDIR /app
 

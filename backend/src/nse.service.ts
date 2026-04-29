@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { ADX, RSI } from 'technicalindicators';
+import { ADX, RSI, ATR } from 'technicalindicators';
 import { ShoonyaService } from './shoonya.service';
 
 export interface NSEStock {
@@ -14,6 +14,9 @@ export interface NSEStock {
     adx?: number;
     rsi?: number;
     rdx?: number;
+    atr14?: number;
+    atr20Avg?: number;
+    atrPct?: number;
 }
 
 export interface NSE15mData {
@@ -132,21 +135,14 @@ export class NseService implements OnModuleInit {
         }
         this.logger.log(`Resolved and Cached ${this.tokenMap.size} security tokens for NSE.`);
 
-        // Subscribe ALL resolved tokens to the Shoonya WS tick feed so that
-        // getBatchLTP / getLiveLTP can serve prices from the tick cache instead
-        // of falling back to REST (which triggers Shoonya TPS 504 rate limits).
-        const allTokens = Array.from(this.tokenMap.values());
-        if (allTokens.length > 0) {
-            this.shoonya.subscribeTokens('NSE', allTokens);
-            this.logger.log(`[WS] Subscribed ${allTokens.length} NSE tokens to Shoonya tick feed.`);
-        }
-
-        // Seed NSE index tokens so getBatchLTP + 2-candle breakout LTP checks work for NIFTY/BANKNIFTY.
-        // These are index tokens (not equities), never returned by searchSecurityToken, so we add them manually.
+        // Only subscribe index tokens at startup — equity stocks are subscribed selectively
+        // after the 9:25 AM morning scan filters them down to ~30-40 momentum stocks.
+        // Subscribing all 200 tokens at once exceeds Shoonya's ~100-token WS limit (Issue #217)
+        // causing silent drops and an empty tick cache for most stocks.
         this.tokenMap.set('NIFTY', '26000');
         this.tokenMap.set('BANKNIFTY', '26009');
         this.shoonya.subscribeTokens('NSE', ['26000', '26009']);
-        this.logger.log('[WS] Subscribed NIFTY(26000) and BANKNIFTY(26009) index tokens to tick feed.');
+        this.logger.log('[WS] Subscribed NIFTY(26000) and BANKNIFTY(26009) index tokens. Equity stocks subscribed after morning scan filter.');
     }
 
     getToken(symbol: string): string | undefined {
@@ -229,6 +225,12 @@ export class NseService implements OnModuleInit {
             const indicators = await this.fetchIndicatorsFromShoonya(sym);
 
             if (indicators) {
+                // ATR expansion filter: current ATR(14) must exceed its 20-day average
+                // confirming the breakout has more energy than usual
+                if (indicators.atr14 <= indicators.atr20Avg) {
+                    this.logger.debug(`[Gann-9] ${sym} skipped: ATR ${indicators.atr14} not above 20-day avg ${indicators.atr20Avg}`);
+                    continue;
+                }
                 finalized.push({
                     symbol: sym,
                     ltp: basic.ltp,
@@ -350,18 +352,24 @@ export class NseService implements OnModuleInit {
             }
         }
 
-        this.logger.log(`[5 EMA] ${priceFiltered.length}/${NIFTY_100_BASKET.length} pass price filter (₹500–₹40,000). Fetching daily ADX...`);
+        this.logger.log(`[5 EMA] ${priceFiltered.length}/${NIFTY_100_BASKET.length} pass price filter (₹500–₹40,000). Fetching indicators...`);
 
         const universe: string[] = [];
         for (const sym of priceFiltered) {
             const indicators = await this.fetchIndicatorsFromShoonya(sym);
-            if (indicators && indicators.adx >= 18) {
-                universe.push(sym);
+            if (indicators) {
+                const isRangebound  = indicators.adx < 25;
+                const hasRange      = indicators.atrPct > 1.5;
+                const isOverstretched = indicators.rsi > 70 || indicators.rsi < 30;
+                if (isRangebound && hasRange && isOverstretched) {
+                    universe.push(sym);
+                    this.logger.debug(`[5 EMA] ${sym} ✅ ADX=${indicators.adx} ATR%=${indicators.atrPct.toFixed(2)} RSI=${indicators.rsi}`);
+                }
             }
             await new Promise(res => setTimeout(res, 150));
         }
 
-        this.logger.log(`[5 EMA] Universe ready: ${universe.length} trending stocks (ADX ≥ 18) from Nifty 100.`);
+        this.logger.log(`[5 EMA] Universe ready: ${universe.length} mean-reversion stocks (ADX<25, ATR%>1.5%, RSI extreme) from Nifty 100.`);
         return universe;
     }
 
@@ -415,12 +423,22 @@ export class NseService implements OnModuleInit {
         const rsiResult = new RSI(rsiInput).getResult();
         const latestRsi = rsiResult.length > 0 ? rsiResult[rsiResult.length - 1] : 0;
 
+        const atrResult = new ATR({ high: hList, low: lList, close: cList, period: 14 }).getResult();
+        const latestAtr14 = atrResult.length > 0 ? atrResult[atrResult.length - 1] : 0;
+        const atr20Values = atrResult.slice(-20);
+        const atr20Avg = atr20Values.length > 0 ? atr20Values.reduce((a: number, b: number) => a + b, 0) / atr20Values.length : latestAtr14;
+        const latestClose = cList[cList.length - 1];
+        const atrPct = latestClose > 0 ? (latestAtr14 / latestClose) * 100 : 0;
+
         const rdx = latestRsi + (latestAdx - 20) / 5;
 
         return {
             adx: parseFloat(latestAdx.toFixed(2)),
             rsi: parseFloat(latestRsi.toFixed(2)),
-            rdx: parseFloat(rdx.toFixed(2))
+            rdx: parseFloat(rdx.toFixed(2)),
+            atr14: parseFloat(latestAtr14.toFixed(2)),
+            atr20Avg: parseFloat(atr20Avg.toFixed(2)),
+            atrPct: parseFloat(atrPct.toFixed(3)),
         };
     }
 
