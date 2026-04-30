@@ -190,8 +190,13 @@ export class AppController {
 
   @Post('shoonya-auto-connect')
   async autoConnect() {
-    const result = await this.shoonyaService.autoConnect();
-    return { status: result.success ? 'success' : 'error', message: result.message, debug: (result as any).debug };
+    // Try QuickAuth first (no browser needed), Chrome as fallback
+    await this.shoonyaService.dailyTokenRefresh();
+    const token = (this.shoonyaService as any).sessionToken;
+    if (token) {
+      return { status: 'success', message: '✅ QuickAuth token obtained successfully.' };
+    }
+    return { status: 'error', message: '❌ QuickAuth failed. Check UID, App Key, VC, and TOTP secret in settings.' };
   }
 
   @Post('shoonya-set-session')
