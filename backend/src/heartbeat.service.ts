@@ -198,20 +198,43 @@ export class HeartbeatService {
                 // GANN_ANGLE / CANDLE_BREAKOUT: execute immediately — breakout is self-confirming
                 // EMA_5: 1-minute sustain (candle close + RSI + volume already confirms)
                 // GANN_9: 3-minute single final check (allows dips/recoveries within the window)
-                const sustainMs = (isGannAngle || isCandleBreakout) ? 0 : isEma ? 1 * 60 * 1000 : 3 * 60 * 1000;
+                const sustainMs = (isGannAngle || isCandleBreakout) ? 0 : isEma ? 1 * 60 * 1000 : 5 * 60 * 1000;
                 const timeElapsedMs = Date.now() - entry.breakoutTime;
 
                 if (timeElapsedMs >= sustainMs) {
                     // Final check at sustain mark — kill if not sustaining (applies to all strategies)
                     if (!isSustaining) {
-                        const invalidMsg = `Signal Invalidated at 3-min check: LTP ₹${ltp} not sustaining ${entry.type} trigger ₹${entry.triggerPrice}.`;
+                        const invalidMsg = `Signal Invalidated at 5-min check: LTP ₹${ltp} not sustaining ${entry.type} trigger ₹${entry.triggerPrice}.`;
                         this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
                         this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
                         await this.cacheManager.del(key);
                         updatedKeys = updatedKeys.filter(k => k !== key);
                         continue;
                     }
-                    const label = (isGannAngle || isCandleBreakout) ? 'IMMEDIATE' : isEma ? '1-MIN' : '3-MIN';
+
+                    // GANN_9: verify the last completed 5-min candle actually CLOSED above/below the trigger
+                    // This is the candle-close confirmation — prevents acting on a wick touch that reversed
+                    if (isGann9) {
+                        const candleClose = await this.getLastCompletedCandleClose(entry.symbol);
+                        if (candleClose !== null) {
+                            const confirmedByCandle = entry.type === 'CE'
+                                ? candleClose >= entry.triggerPrice
+                                : candleClose <= entry.triggerPrice;
+                            if (!confirmedByCandle) {
+                                const msg = `5-min candle close ₹${candleClose} did not confirm ${entry.type} trigger ₹${entry.triggerPrice.toFixed(2)}. Fake breakout — ignored.`;
+                                this.logger.warn(`❌ [${entry.symbol}] ${msg}`);
+                                this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, msg, entry.strategyName);
+                                await this.cacheManager.del(key);
+                                updatedKeys = updatedKeys.filter(k => k !== key);
+                                continue;
+                            }
+                            this.logger.log(`📊 [${entry.symbol}] 5-min candle close ₹${candleClose} confirms ${entry.type} above trigger ₹${entry.triggerPrice.toFixed(2)}.`);
+                        } else {
+                            this.logger.warn(`[${entry.symbol}] Could not fetch 5-min candle — proceeding with tick confirmation.`);
+                        }
+                    }
+
+                    const label = (isGannAngle || isCandleBreakout) ? 'IMMEDIATE' : isEma ? '1-MIN' : '5-MIN';
                     this.logger.log(`🚀 ${label} SIGNAL CONFIRMED FOR [${entry.symbol}] AT ₹${ltp}! Triggering ${entry.type} Option Entry.`);
 
                     // Remove from watchlist so we don't buy it twice
@@ -382,35 +405,48 @@ export class HeartbeatService {
             // 1. GAP DOWN REVERSAL (CE): opened below S1, now crossing back above S1
             if (openLtp < levels.S1 && freshCE(ltp, levels.S1)) {
                 tradeType = 'CE'; trigger = levels.S1;
-                target = levels.previousClose; sl = levels.S1;
+                target = levels.previousClose;
             }
             // 2. GAP UP REVERSAL (PE): opened above R1, now crossing back below R1
             else if (openLtp > levels.R1 && freshPE(ltp, levels.R1)) {
                 tradeType = 'PE'; trigger = levels.R1;
-                target = levels.previousClose; sl = levels.R1;
+                target = levels.previousClose;
             }
             // 3. GAP UP R2 CROSSOVER (CE): opened between R1–R2, now crossing above R2
             else if (openLtp > levels.R1 && openLtp <= levels.R2 && freshCE(ltp, levels.R2)) {
                 tradeType = 'CE'; trigger = levels.R2;
-                target = levels.R3; sl = levels.R2;
+                target = levels.R3;
             }
             // 4. GAP DOWN S2 CROSSDOWN (PE): opened between S1–S2, now crossing below S2
             else if (openLtp < levels.S1 && openLtp >= levels.S2 && freshPE(ltp, levels.S2)) {
                 tradeType = 'PE'; trigger = levels.S2;
-                target = levels.S3; sl = levels.S2;
+                target = levels.S3;
             }
             // 5. STANDARD BREAKOUT (CE): opened below R1, now crossing above R1
             else if (openLtp <= levels.R1 && freshCE(ltp, levels.R1)) {
                 tradeType = 'CE'; trigger = levels.R1;
-                target = levels.R2; sl = levels.R1;
+                target = levels.R2;
             }
             // 6. STANDARD BREAKDOWN (PE): opened above S1, now crossing below S1
             else if (openLtp >= levels.S1 && freshPE(ltp, levels.S1)) {
                 tradeType = 'PE'; trigger = levels.S1;
-                target = levels.S2; sl = levels.S1;
+                target = levels.S2;
             }
 
             if (!tradeType || !trigger) continue;
+
+            // SL buffer: 0.2% below trigger for CE, 0.2% above trigger for PE
+            // Avoids exact-level SL which gets clipped by market noise
+            const SL_BUFFER = 0.002;
+            sl = tradeType === 'CE' ? trigger * (1 - SL_BUFFER) : trigger * (1 + SL_BUFFER);
+
+            // R:R guard — minimum 1:2 on the underlying before entering
+            const riskPts   = Math.abs(trigger - sl);
+            const rewardPts = Math.abs(target - trigger);
+            if (rewardPts < 2 * riskPts) {
+                this.logger.debug(`[${stock.symbol}] GANN_9 skipped: R:R ${(rewardPts / riskPts).toFixed(1)}:1 < 2:1`);
+                continue;
+            }
 
             // Skip if already in watchlist
             const existing = await this.cacheManager.get(`WATCHLIST:${stock.symbol}`);
@@ -729,6 +765,22 @@ export class HeartbeatService {
     clearCandleBreakoutState() {
         this.cbHalfExited.clear();
         this.logger.log('[2-Candle] Half-exit tracker cleared for new day.');
+    }
+
+    /** Fetch the close price of the most recently COMPLETED 5-min candle for a symbol.
+     *  Shoonya returns candles newest-first, so index[0] = currently forming, index[1] = last completed. */
+    private async getLastCompletedCandleClose(symbol: string): Promise<number | null> {
+        const token = this.nseService.getToken(symbol);
+        if (!token) return null;
+        try {
+            const candles = await this.shoonyaService.getTimePriceSeries('NSE', token, '5', 1);
+            if (!candles || candles.length < 2) return null;
+            const close = parseFloat(candles[1]?.intc || '0');
+            return close > 0 ? close : null;
+        } catch (err: any) {
+            this.logger.warn(`[${symbol}] 5-min candle fetch failed: ${err.message}`);
+            return null;
+        }
     }
 
     private isMarketHours(): boolean {
