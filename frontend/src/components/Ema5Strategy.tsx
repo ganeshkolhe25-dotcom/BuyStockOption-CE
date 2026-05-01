@@ -4,6 +4,7 @@ import { useState } from "react";
 import axios from "axios";
 import { Activity, TrendingUp, TrendingDown, Crosshair, BarChart2, List } from "lucide-react";
 import StrategyCalendar from "./StrategyCalendar";
+import { CUSTOM_UNIVERSE } from "@/constants/universe";
 
 export default function Ema5Strategy({ isEnabled, portfolio, history }: { isEnabled?: boolean, portfolio?: any, history?: any[] }) {
   const [squaringOff, setSquaringOff] = useState<string | null>(null);
@@ -84,84 +85,57 @@ export default function Ema5Strategy({ isEnabled, portfolio, history }: { isEnab
 
       <div className="flex gap-2 border-b border-neutral-800 pb-2">
          <button onClick={() => setActiveInnerTab('scanner')} className={`px-4 py-2 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 ${activeInnerTab === 'scanner' ? 'border-amber-500 text-amber-400' : 'border-transparent text-neutral-500 hover:text-white'}`}><Crosshair className="w-4 h-4" /> Market Scanner</button>
-         <button onClick={() => setActiveInnerTab('chart')} className={`px-4 py-2 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 ${activeInnerTab === 'chart' ? 'border-amber-500 text-amber-400' : 'border-transparent text-neutral-500 hover:text-white'}`}><BarChart2 className="w-4 h-4" /> Live Chart Validation</button>
-         <button onClick={() => setActiveInnerTab('ledger')} className={`px-4 py-2 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 ${activeInnerTab === 'ledger' ? 'border-amber-500 text-amber-400' : 'border-transparent text-neutral-500 hover:text-white'}`}><List className="w-4 h-4" /> Active Positions & Ledger</button>
+         <button onClick={() => setActiveInnerTab('chart')} className={`px-4 py-2 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 ${activeInnerTab === 'chart' ? 'border-amber-500 text-amber-400' : 'border-transparent text-neutral-500 hover:text-white'}`}><BarChart2 className="w-4 h-4" /> Active Position</button>
+         <button onClick={() => setActiveInnerTab('ledger')} className={`px-4 py-2 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2 ${activeInnerTab === 'ledger' ? 'border-amber-500 text-amber-400' : 'border-transparent text-neutral-500 hover:text-white'}`}><List className="w-4 h-4" /> Trade Ledger</button>
       </div>
 
       {activeInnerTab === 'scanner' && (
-         <div className="space-y-6">
-         <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 relative overflow-hidden text-center py-10">
-             <Activity className="w-16 h-16 text-amber-500/20 mx-auto mb-4" />
-             <h2 className="text-lg font-bold text-white mb-2">Automated 5-Minute Scan Running</h2>
-             <p className="text-sm text-neutral-400 max-w-lg mx-auto">Scans all Nifty 100 stocks filtered at 9:20 AM by price (₹500–₹40,000) and ADX ≥ 18 (trending). Every 5 minutes, fetches live candles for qualifying stocks and looks for a 2-candle Alert + Activation pattern where price reverses sharply back toward the 5 EMA.</p>
-             <div className="mt-6 flex flex-wrap justify-center gap-3">
-                  <span className="flex items-center gap-2 text-xs font-bold px-3 py-1 bg-neutral-800 rounded-full text-neutral-400"><TrendingDown className="w-3 h-3 text-rose-500" /> PE: Alert fully above EMA → Act breaks Low</span>
-                  <span className="flex items-center gap-2 text-xs font-bold px-3 py-1 bg-neutral-800 rounded-full text-neutral-400"><TrendingUp className="w-3 h-3 text-emerald-500" /> CE: Alert fully below EMA → Act breaks High</span>
-             </div>
-             <div className="mt-4 flex flex-wrap justify-center gap-3">
-                  <span className="flex items-center gap-2 text-xs px-3 py-1 bg-amber-500/10 border border-amber-500/20 rounded-full text-amber-400/80">⏰ 09:30 – 11:00 AM</span>
-                  <span className="flex items-center gap-2 text-xs px-3 py-1 bg-amber-500/10 border border-amber-500/20 rounded-full text-amber-400/80">⏰ 01:30 – 03:00 PM</span>
-                  <span className="flex items-center gap-2 text-xs px-3 py-1 bg-sky-500/10 border border-sky-500/20 rounded-full text-sky-400/80">ITM Strike — Better Delta</span>
-                  <span className="flex items-center gap-2 text-xs px-3 py-1 bg-indigo-500/10 border border-indigo-500/20 rounded-full text-indigo-400/80">🔍 ADX ≥ 18 · RSI filter at signal · Volume surge</span>
-             </div>
-         </div>
+         <div className="space-y-4">
+           {/* Strategy info banner */}
+           <div className="bg-neutral-900 border border-neutral-800 rounded-2xl px-5 py-4 flex flex-wrap items-center gap-4 text-xs text-neutral-400">
+             <span className="flex items-center gap-1.5"><TrendingDown className="w-3 h-3 text-rose-400" /> PE: Alert fully above EMA → Act breaks Low</span>
+             <span className="flex items-center gap-1.5"><TrendingUp className="w-3 h-3 text-emerald-400" /> CE: Alert fully below EMA → Act breaks High</span>
+             <span className="ml-auto text-amber-400/70">⏰ 09:30–11:00 AM · 01:30–03:00 PM</span>
+           </div>
 
-          {/* Integrated Active Trades List for EMA 5 */}
-          {portfolio?.positions?.some((p: any) => p.strategyName === 'EMA_5') && (
-             <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6">
-                <h3 className="text-sm font-semibold text-neutral-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-                   <Activity className="w-4 h-4 text-emerald-400" /> Currently Active EMA 5 Trades
-                </h3>
-                <div className="space-y-4">
-                   {portfolio.positions.filter((p: any) => p.strategyName === 'EMA_5').map((pos: any, idx: number) => {
-                      const livePnl = (pos.currentLtp - pos.entryPrice) * pos.qty;
-                      return (
-                        <div key={idx} className="flex flex-col md:flex-row md:items-center justify-between p-4 rounded-xl bg-neutral-950 border border-neutral-800 hover:border-amber-500/30 transition-all">
-                           <div className="flex items-center gap-4">
-                              <div className={`p-2 rounded-lg ${pos.type === 'CE' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
-                                 {pos.type === 'CE' ? <TrendingUp className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
-                              </div>
-                              <div>
-                                 <div className="font-bold text-white uppercase">{pos.symbol} <span className="text-xs font-mono text-neutral-500 ml-2">{pos.tradingSymbol}</span></div>
-                                 <div className="text-xs text-neutral-500">
-                                   Entry: ₹{pos.entryPrice} @ {pos.entryTime ? new Date(pos.entryTime).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '--'}
-                                 </div>
-                              </div>
-                           </div>
-                           <div className="mt-4 md:mt-0 flex items-center gap-6">
-                              {pos.slPrice && <div className="text-right">
-                                 <div className="text-[10px] text-neutral-500 uppercase font-bold">Stock SL</div>
-                                 <div className="text-rose-400 font-mono font-bold">₹{pos.slPrice}</div>
-                              </div>}
-                              {pos.targetPrice && <div className="text-right">
-                                 <div className="text-[10px] text-neutral-500 uppercase font-bold">Stock Target</div>
-                                 <div className="text-emerald-400 font-mono font-bold">₹{pos.targetPrice}</div>
-                              </div>}
-                              <div className="text-right">
-                                 <div className="text-[10px] text-neutral-500 uppercase font-bold">Option LTP</div>
-                                 <div className="text-white font-mono font-bold animate-pulse">₹{pos.currentLtp}</div>
-                              </div>
-                              <div className="text-right min-w-[90px]">
-                                 <div className="text-[10px] text-neutral-500 uppercase font-bold">PnL</div>
-                                 <div className={`font-mono font-bold text-lg ${livePnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                    {livePnl >= 0 ? '+' : ''}₹{livePnl.toFixed(2)}
-                                 </div>
-                              </div>
-                              <button
-                                onClick={() => handleSquareOff(pos.token)}
-                                disabled={squaringOff === pos.token}
-                                className={`px-3 py-1.5 text-xs font-bold rounded ${squaringOff === pos.token ? 'bg-neutral-800 text-neutral-500 cursor-not-allowed' : 'bg-red-500/10 text-red-500 hover:bg-red-500/20 border border-red-500/30'} transition-colors`}
-                              >
-                                {squaringOff === pos.token ? 'Closing...' : 'Square Off'}
-                              </button>
-                           </div>
-                        </div>
-                      );
-                   })}
-                </div>
-             </div>
-          )}
-          </div>
+           {/* Universe grid */}
+           <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
+             {CUSTOM_UNIVERSE.filter(u => !u.isIndex).map((uStock) => {
+               const activePos = portfolio?.positions?.find((p: any) => p.symbol === uStock.symbol && p.strategyName === 'EMA_5');
+               const isActive = !!activePos;
+               const livePnl = isActive ? (activePos.currentLtp - activePos.entryPrice) * activePos.qty : null;
+
+               return (
+                 <div key={uStock.symbol} className={`bg-neutral-900 border rounded-xl p-3 transition-all ${isActive ? 'border-amber-500/40' : 'border-neutral-800'}`}>
+                   <div className="flex items-start justify-between gap-1 mb-2">
+                     <div>
+                       <div className="font-bold text-sm text-white">{uStock.symbol}</div>
+                       <div className="text-[10px] text-neutral-500 leading-tight mt-0.5">{uStock.name}</div>
+                     </div>
+                     {isActive ? (
+                       <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/25 text-[9px] font-bold uppercase shrink-0">
+                         <span className="w-1 h-1 rounded-full bg-amber-400 animate-pulse" />Active
+                       </span>
+                     ) : (
+                       <span className="px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-500 text-[9px] font-bold uppercase shrink-0">Watch</span>
+                     )}
+                   </div>
+                   {isActive && activePos && (
+                     <div className="pt-2 border-t border-neutral-800 space-y-1">
+                       <div className="flex justify-between text-[10px] font-mono">
+                         <span className="text-neutral-500">{activePos.type}</span>
+                         <span className="text-white">₹{activePos.currentLtp}</span>
+                       </div>
+                       <div className={`text-right text-[11px] font-mono font-bold ${(livePnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                         {(livePnl ?? 0) >= 0 ? '+' : ''}₹{(livePnl ?? 0).toFixed(2)}
+                       </div>
+                     </div>
+                   )}
+                 </div>
+               );
+             })}
+           </div>
+         </div>
       )}
 
       {activeInnerTab === 'chart' && (
@@ -181,7 +155,7 @@ export default function Ema5Strategy({ isEnabled, portfolio, history }: { isEnab
           <StrategyCalendar history={history || []} strategyName="EMA_5" accentColor="amber" />
         <div className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden">
           <div className="px-6 py-5 border-b border-neutral-800">
-            <h2 className="text-base font-bold text-white">5 EMA Strategy Ledger</h2>
+            <h2 className="text-base font-bold text-white">5 EMA Trade Ledger</h2>
             <p className="text-xs text-neutral-500 mt-1">Alert+Activation mean-reversion entries. SL/Target stock-level (1:3 R:R). Trailing SL at 1:2.</p>
           </div>
           <div className="overflow-x-auto">

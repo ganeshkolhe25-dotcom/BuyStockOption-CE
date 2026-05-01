@@ -28,6 +28,19 @@ export interface NSE15mData {
     volumes: number[];
 }
 
+// Custom trading universe — hand-picked by the trader for both Gann-9 and 5 EMA strategies.
+// These 33 stocks plus NIFTY and BANKNIFTY (handled separately as indices) replace the
+// broad Nifty-200 / Nifty-100 baskets. All symbols verified on NSE as of May 2026.
+export const CUSTOM_TRADING_UNIVERSE = [
+    "PAGEIND", "BOSCHLTD", "POWERINDIA", "SHREECEM", "FORCEMOT",
+    "SOLARINDS", "MARUTI", "ULTRACEMCO", "DIXON", "BAJAJHLDNG",
+    "BAJAJ-AUTO", "OFSS", "POLYCAB", "AMBER", "APOLLOHOSP",
+    "ABB", "EICHERMOT", "DIVISLAB", "BRITANNIA", "ALKEM",
+    "CUMMINSIND", "HEROMOTOCO", "KEI", "MRF", "ABBOTINDIA",
+    "HONAUT", "NESTLEIND", "LTIM", "BAJFINANCE", "COFORGE",
+    "TRENT", "SIEMENS", "PERSISTENT",
+];
+
 const NIFTY_200_BASKET = [
     "ABB", "ACC", "ADANIENT", "ADANIPORTS", "AMBUJACEM", "APOLLOHOSP",
     "ASIANPAINT", "AUBANK", "AXISBANK", "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV",
@@ -68,26 +81,6 @@ const NIFTY_100_BASKET = [
     "RECLTD", "CONCOR", "IDFCFIRSTB", "BALKRISIND", "PEL"
 ];
 
-// High-beta, high-ATR Nifty 100 stocks suitable for 5 EMA mean-reversion
-const VOLATILE_NIFTY100 = [
-    // Banking & Finance (most volatile intraday)
-    "AXISBANK", "SBIN", "ICICIBANK", "HDFCBANK", "KOTAKBANK",
-    "INDUSINDBK", "BAJFINANCE", "BAJAJFINSV", "IDFCFIRSTB", "BANDHANBNK",
-    // Auto (high ATR)
-    "TMPV", "TMCV", "BAJAJ-AUTO", "EICHERMOT", "M&M", "MARUTI", "TVSMOTOR", "HEROMOTOCO",
-    // IT (liquid and reactive)
-    "TCS", "INFY", "HCLTECH", "TECHM", "WIPRO", "PERSISTENT",
-    // Metals & Energy
-    "TATASTEEL", "JSWSTEEL", "HINDALCO", "VEDL", "COALINDIA", "ONGC",
-    // Infra / Capital Goods
-    "LT", "HAL", "BEL", "ADANIENT", "ADANIPORTS", "SIEMENS", "ABB",
-    // Large-cap anchors (always liquid)
-    "RELIANCE", "BHARTIARTL", "NTPC",
-    // High-beta consumer / pharma
-    "TITAN", "TRENT", "DIXON", "INDIGO", "DRREDDY", "SUNPHARMA", "CIPLA", "APOLLOHOSP",
-    // Others with consistent intraday range
-    "GRASIM", "CHOLAFIN", "GODREJCP", "MUTHOOTFIN", "PIIND", "NAUKRI"
-];
 
 @Injectable()
 export class NseService implements OnModuleInit {
@@ -121,7 +114,7 @@ export class NseService implements OnModuleInit {
             return;
         }
 
-        const targetSymbols = Array.from(new Set([...NIFTY_100_BASKET, ...NIFTY_200_BASKET]));
+        const targetSymbols = Array.from(new Set([...NIFTY_100_BASKET, ...NIFTY_200_BASKET, ...CUSTOM_TRADING_UNIVERSE]));
 
         for (let i = 0; i < targetSymbols.length; i += 10) {
             const batch = targetSymbols.slice(i, i + 10);
@@ -190,12 +183,12 @@ export class NseService implements OnModuleInit {
      * Nifty 200 Scanning for Gann Signal Generation
      */
     async scanGainersLosers(): Promise<NSEStock[]> {
-        this.logger.log('Scanning Shoonya for Gann Strategy Movers...');
-        
-        // Use MultiQuote for all 200 first, then filter and fetch indicators for the top ones
-        const tokens = NIFTY_200_BASKET.map(sym => this.tokenMap.get(sym)).filter(Boolean) as string[];
+        this.logger.log('Scanning Shoonya for Gann Strategy Movers (Custom Universe)...');
+
+        // Use CUSTOM_TRADING_UNIVERSE — all 33 hand-picked stocks
+        const tokens = CUSTOM_TRADING_UNIVERSE.map(sym => this.tokenMap.get(sym)).filter(Boolean) as string[];
         const quoteResults = await this.shoonya.getMultiQuotes('NSE', tokens);
-        
+
         const candidateSymbols: string[] = [];
         const basicDataMap = new Map<string, any>();
 
@@ -205,9 +198,8 @@ export class NseService implements OnModuleInit {
                 const prevClose = parseFloat(item.c) || ltp;
                 const openPrice = parseFloat(item.o) || ltp;
                 const pChange = ((ltp - prevClose) / prevClose) * 100;
-
-                // Core Filter: 500 < LTP < 30000 (covers all Nifty stocks with liquid options)
-                if (ltp >= 500 && ltp <= 30000) {
+                // No price ceiling — custom universe includes MRF (~₹120k), Page Industries, etc.
+                if (ltp >= 100) {
                     const symbol = item.tsym.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym;
                     candidateSymbols.push(symbol);
                     basicDataMap.set(symbol, { ltp, pChange, prevClose, openPrice });
@@ -262,6 +254,25 @@ export class NseService implements OnModuleInit {
             await new Promise(res => setTimeout(res, 150));
         }
 
+        // Append NIFTY and BANKNIFTY as index entries for Gann-9 level calculation
+        for (const [symbol, token] of [['NIFTY', '26000'], ['BANKNIFTY', '26009']] as [string, string][]) {
+            try {
+                const candles = await this.shoonya.getTimePriceSeries('NSE', token, 'D', 3);
+                if (candles.length >= 2) {
+                    const sorted = [...candles].reverse();
+                    const ltp = parseFloat(sorted[sorted.length - 1]?.intc || '0');
+                    const prevClose = parseFloat(sorted[sorted.length - 2]?.intc || sorted[sorted.length - 1]?.intc || '0');
+                    if (ltp > 0 && prevClose > 0) {
+                        const pChange = ((ltp - prevClose) / prevClose) * 100;
+                        finalized.push({ symbol, ltp, pChange: parseFloat(pChange.toFixed(2)), prevClose });
+                        this.logger.log(`[Gann-9] ${symbol} index added: LTP=${ltp} prevClose=${prevClose}`);
+                    }
+                }
+            } catch (err: any) {
+                this.logger.warn(`[Gann-9] Could not fetch ${symbol} index data: ${err.message}`);
+            }
+        }
+
         return finalized;
     }
 
@@ -305,7 +316,7 @@ export class NseService implements OnModuleInit {
      * (video: buy setups on 15-min chart, sell setups on 5-min chart).
      */
     async scanEma5_15mUniverse(symbols?: string[]): Promise<NSE15mData[]> {
-        const targetSymbols = symbols ?? VOLATILE_NIFTY100;
+        const targetSymbols = symbols ?? CUSTOM_TRADING_UNIVERSE;
         this.logger.log(`Fetching 15-min Shoonya Candles for ${targetSymbols.length} EMA universe stocks (CE scan)...`);
         const processed: NSE15mData[] = [];
 
@@ -337,22 +348,23 @@ export class NseService implements OnModuleInit {
      * Called once at 9:20 AM; result cached as EMA5_UNIVERSE for the rest of the day.
      */
     async buildEma5Universe(): Promise<string[]> {
-        this.logger.log('[5 EMA] Building morning universe from Nifty 100 (price + ADX filter)...');
+        this.logger.log('[5 EMA] Building morning universe from Custom Trading Universe (ADX filter)...');
 
-        const tokens = NIFTY_100_BASKET.map(sym => this.tokenMap.get(sym)).filter(Boolean) as string[];
+        const tokens = CUSTOM_TRADING_UNIVERSE.map(sym => this.tokenMap.get(sym)).filter(Boolean) as string[];
         const quotes = await this.shoonya.getMultiQuotes('NSE', tokens);
 
+        // All custom universe stocks are user-chosen — skip price ceiling (MRF ~₹120k, etc.)
         const priceFiltered: string[] = [];
         for (const item of quotes) {
             if (!item.lp || !item.tsym) continue;
             const ltp = parseFloat(item.lp);
-            if (ltp >= 500 && ltp <= 40000) {
+            if (ltp >= 100) {
                 const sym = item.tsym.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym;
                 priceFiltered.push(sym);
             }
         }
 
-        this.logger.log(`[5 EMA] ${priceFiltered.length}/${NIFTY_100_BASKET.length} pass price filter (₹500–₹40,000). Fetching indicators...`);
+        this.logger.log(`[5 EMA] ${priceFiltered.length}/${CUSTOM_TRADING_UNIVERSE.length} pass price filter. Fetching indicators...`);
 
         const universe: string[] = [];
         for (const sym of priceFiltered) {
@@ -369,7 +381,7 @@ export class NseService implements OnModuleInit {
             await new Promise(res => setTimeout(res, 150));
         }
 
-        this.logger.log(`[5 EMA] Universe ready: ${universe.length} mean-reversion stocks (ADX<25, ATR%>1.5%, RSI extreme) from Nifty 100.`);
+        this.logger.log(`[5 EMA] Universe ready: ${universe.length} mean-reversion stocks (ADX<25, ATR%>1.5%, RSI extreme) from Custom Universe.`);
         return universe;
     }
 
@@ -378,7 +390,7 @@ export class NseService implements OnModuleInit {
      * Uses the ADX-filtered morning universe when provided; falls back to VOLATILE_NIFTY100.
      */
     async scanEma5mUniverse(symbols?: string[]): Promise<NSE15mData[]> {
-        const targetSymbols = symbols ?? VOLATILE_NIFTY100;
+        const targetSymbols = symbols ?? CUSTOM_TRADING_UNIVERSE;
         this.logger.log(`Fetching 5-min Shoonya Candles for ${targetSymbols.length} EMA universe stocks...`);
         const processed: NSE15mData[] = [];
 

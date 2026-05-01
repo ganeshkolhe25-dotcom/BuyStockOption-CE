@@ -8,6 +8,7 @@ import GannAngle from "@/components/GannAngle";
 import Ema5Strategy from "@/components/Ema5Strategy";
 import CandleBreakout from "@/components/CandleBreakout";
 import StrategyCalendar from "@/components/StrategyCalendar";
+import { CUSTOM_UNIVERSE } from "@/constants/universe";
 
 interface StockData {
   symbol: string;
@@ -597,7 +598,7 @@ export default function Home() {
             className={`flex-shrink-0 flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'watchlist' ? 'border-amber-500 text-amber-400' : 'border-transparent text-neutral-500 hover:text-neutral-300'}`}
           >
             <Clock className="w-4 h-4" />
-            Pending Watchlist
+            Pending Stocks
             {watchlist?.filter((w: any) => !w.strategyName || w.strategyName === 'GANN_9').length > 0 && (
               <span className="ml-1 bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded-full text-xs">{watchlist.filter((w: any) => !w.strategyName || w.strategyName === 'GANN_9').length}</span>
             )}
@@ -607,7 +608,7 @@ export default function Home() {
             className={`flex-shrink-0 flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'positions' ? 'border-emerald-500 text-emerald-400' : 'border-transparent text-neutral-500 hover:text-neutral-300'}`}
           >
             <Briefcase className="w-4 h-4" />
-            Active Positions
+            Active Stocks
             {gann9ActivePos.length > 0 && (
               <span className="ml-1 bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full text-xs">{gann9ActivePos.length}</span>
             )}
@@ -684,124 +685,118 @@ export default function Home() {
                 </div>
               )}
 
-              {data.length === 0 && !error && !isFirstLoad && (
-                <div className="text-center py-20 border border-dashed border-neutral-800 rounded-2xl">
-                  <p className="text-neutral-500">No Nifty 200 setup found right now matching rules (5k-30k Price & ADX  &gt; 25).</p>
-                  <p className="text-neutral-600 text-xs mt-2">Use "Re-run Gann-9 Scan" above to trigger a fresh scan.</p>
-                </div>
-              )}
+              {/* Universe grid — all 35 stocks, status overlaid from live data */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                {CUSTOM_UNIVERSE.map((uStock) => {
+                  const scanData = data.find(d => d.symbol === uStock.symbol);
+                  const activePos = gann9ActivePos.find((p: any) => p.symbol === uStock.symbol);
+                  const pendingItem = watchlist?.find((w: any) => w.symbol === uStock.symbol && (!w.strategyName || w.strategyName === 'GANN_9'));
+                  const isTraded = tradedSymbolsToday.has(uStock.symbol);
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {data.map((stock) => {
-                  const isBullish = stock.pChange >= 0;
-                  const hasCE = stock.snapshotStatus.ceTriggerThreshold;
-                  const hasPE = stock.snapshotStatus.peTriggerThreshold;
+                  const isActive  = !!activePos;
+                  const isPending = !!pendingItem && !isActive;
+                  const hasSignal = !!scanData && !isActive && !isPending;
 
-                  const isTraded = tradedSymbolsToday.has(stock.symbol);
+                  const hasCE = scanData?.snapshotStatus.ceTriggerThreshold;
+                  const hasPE = scanData?.snapshotStatus.peTriggerThreshold;
+                  const isBullish = (scanData?.pChange ?? 0) >= 0;
+
+                  const borderClass = isActive  ? 'border-emerald-500/40' :
+                                      isPending ? 'border-amber-500/40'   :
+                                      hasSignal ? 'border-indigo-500/30'  :
+                                                  'border-neutral-800';
+
                   return (
-                    <div
-                      key={stock.symbol}
-                      className={`group relative bg-neutral-900 border rounded-2xl p-6 hover:border-neutral-700 transition-all overflow-hidden ${isTraded ? 'border-indigo-500/30' : 'border-neutral-800'}`}
-                    >
-                      {/* Background glow based on trend */}
-                      <div className={`absolute top-0 right-0 w-64 h-64 bg-gradient-to-bl opacity-10 blur-3xl rounded-full pointer-events-none transition-colors duration-500 ${isBullish ? 'from-emerald-500' : 'from-rose-500'
-                        }`}></div>
+                    <div key={uStock.symbol} className={`relative bg-neutral-900 border rounded-2xl p-4 transition-all overflow-hidden ${borderClass}`}>
+                      {/* Glow */}
+                      {(isActive || isPending) && (
+                        <div className={`absolute top-0 right-0 w-48 h-48 opacity-10 blur-3xl rounded-full pointer-events-none ${isActive ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                      )}
 
-                      <div className="relative z-10 flex justify-between items-start mb-6">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <h2 className="text-2xl font-bold tracking-tight">{stock.symbol}</h2>
-                            {isTraded && (
-                              <span className="px-2 py-0.5 text-[10px] font-bold bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded">TRADED</span>
-                            )}
+                      <div className="relative z-10">
+                        {/* Header row */}
+                        <div className="flex items-start justify-between mb-3">
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-base tracking-tight text-white">{uStock.symbol}</span>
+                              {uStock.isIndex && <span className="text-[9px] font-bold px-1.5 py-0.5 bg-neutral-800 text-neutral-400 rounded uppercase">Index</span>}
+                              {isTraded && !isActive && <span className="text-[9px] font-bold px-1.5 py-0.5 bg-indigo-500/20 text-indigo-400 border border-indigo-500/20 rounded uppercase">Traded</span>}
+                            </div>
+                            <div className="text-[11px] text-neutral-500 mt-0.5">{uStock.name}</div>
                           </div>
-                          <div className="flex items-center gap-2 mt-1">
-                            <span className="text-neutral-400 text-sm">Prev Close:</span>
-                            <span className="font-mono text-sm">₹{stock.prevClose.toFixed(2)}</span>
-                            <span className="text-[10px] text-neutral-600 font-mono border border-neutral-800 px-1.5 py-0.5 rounded">Data: 9:20 AM</span>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-2xl font-mono font-medium">₹{stock.ltp.toFixed(2)}</div>
-                          <div className={`flex items-center justify-end gap-1 text-sm font-medium ${isBullish ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {isBullish ? <TrendingUp className="w-4 h-4" /> : <TrendingDown className="w-4 h-4" />}
-                            {stock.pChange.toFixed(2)}%
-                          </div>
-                        </div>
-                      </div>
 
-                      {/* Gann Levels */}
-                      <div className="grid grid-cols-2 gap-4 mb-6">
-                        <div className="space-y-3 p-4 rounded-xl bg-emerald-500/5 border border-emerald-500/10">
-                          <div className="flex items-center gap-2 text-emerald-400 mb-2">
-                            <Target className="w-4 h-4" />
-                            <span className="text-xs font-bold uppercase tracking-wider">Resistance</span>
-                          </div>
-                          <div className="flex justify-between text-sm font-mono">
-                            <span className="text-neutral-500">R3</span>
-                            <span className="text-neutral-300">₹{stock.levels.R3.toFixed(2)}</span>
-                          </div>
-                          <div className="flex justify-between text-sm font-mono">
-                            <span className="text-neutral-500">R2</span>
-                            <span className="text-neutral-300">₹{stock.levels.R2.toFixed(2)}</span>
-                          </div>
-                          <div className="flex justify-between text-sm font-mono font-medium">
-                            <span className="text-emerald-500">R1</span>
-                            <span className="text-emerald-400">₹{stock.levels.R1.toFixed(2)}</span>
-                          </div>
-                        </div>
-
-                        <div className="space-y-3 p-4 rounded-xl bg-rose-500/5 border border-rose-500/10">
-                          <div className="flex items-center gap-2 text-rose-400 mb-2">
-                            <Shield className="w-4 h-4" />
-                            <span className="text-xs font-bold uppercase tracking-wider">Support</span>
-                          </div>
-                          <div className="flex justify-between text-sm font-mono font-medium">
-                            <span className="text-rose-500">S1</span>
-                            <span className="text-rose-400">₹{stock.levels.S1.toFixed(2)}</span>
-                          </div>
-                          <div className="flex justify-between text-sm font-mono">
-                            <span className="text-neutral-500">S2</span>
-                            <span className="text-neutral-300">₹{stock.levels.S2.toFixed(2)}</span>
-                          </div>
-                          <div className="flex justify-between text-sm font-mono">
-                            <span className="text-neutral-500">S3</span>
-                            <span className="text-neutral-300">₹{stock.levels.S3.toFixed(2)}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Trade Status Engine */}
-                      <div className="pt-4 border-t border-neutral-800 flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <span className="text-xs text-neutral-500 uppercase tracking-widest font-semibold">Engine Status</span>
-                          {hasCE ? (
-                            <span className="px-2.5 py-1 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-xs font-medium">
-                              CE Trigger ({hasCE})
+                          {/* Status badge */}
+                          {isActive ? (
+                            <span className="flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/25 text-[10px] font-bold uppercase tracking-wide">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />Active
                             </span>
-                          ) : hasPE ? (
-                            <span className="px-2.5 py-1 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30 text-xs font-medium">
-                              PE Trigger ({hasPE})
+                          ) : isPending ? (
+                            <span className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500/15 text-amber-400 border border-amber-500/25 text-[10px] font-bold uppercase tracking-wide">
+                              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />Pending
+                            </span>
+                          ) : hasSignal ? (
+                            <span className="flex items-center gap-1 px-2 py-1 rounded-lg bg-indigo-500/15 text-indigo-400 border border-indigo-500/25 text-[10px] font-bold uppercase tracking-wide">
+                              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse" />Signal
                             </span>
                           ) : (
-                            <span className="px-2.5 py-1 rounded bg-neutral-800 text-neutral-400 border border-neutral-700 text-xs font-medium flex items-center gap-1.5">
-                              <span className="w-1.5 h-1.5 rounded-full bg-neutral-500 animate-pulse"></span>
-                              Scanning
+                            <span className="flex items-center gap-1 px-2 py-1 rounded-lg bg-neutral-800 text-neutral-500 border border-neutral-700 text-[10px] font-bold uppercase tracking-wide">
+                              <span className="w-1.5 h-1.5 rounded-full bg-neutral-600" />Monitoring
                             </span>
                           )}
                         </div>
 
-                        {/* Visual Position Indicator */}
-                        <div className="flex flex-col items-end gap-1">
-                          <div className="text-xs font-mono text-neutral-400">
-                            RSI: <span className="text-neutral-200">{stock.rsi?.toFixed(1) || '--'}</span> | ADX: <span className="text-violet-400 font-bold">{stock.adx?.toFixed(1) || '--'}</span> | RDX: <span className="text-amber-400">{stock.rdx?.toFixed(1) || '--'}</span>
-                          </div>
-                          <div className="text-[10px] font-mono text-neutral-600">
-                            Shoonya Link: <span className={hasCE || hasPE ? "text-emerald-500" : "text-neutral-500"}>{hasCE || hasPE ? "Ready for Live Execution" : "Waiting for Setup"}</span>
-                          </div>
-                        </div>
-                      </div>
+                        {/* Price row — shown when scan data available */}
+                        {scanData ? (
+                          <>
+                            <div className="flex items-baseline justify-between mb-3">
+                              <div className="text-lg font-mono font-bold text-white">₹{scanData.ltp.toFixed(2)}</div>
+                              <div className={`text-xs font-mono font-medium flex items-center gap-1 ${isBullish ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {isBullish ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                                {scanData.pChange.toFixed(2)}%
+                              </div>
+                            </div>
 
+                            {/* Compact Gann levels */}
+                            <div className="grid grid-cols-2 gap-2 mb-3 text-[11px] font-mono">
+                              <div className="bg-emerald-500/5 border border-emerald-500/10 rounded-lg px-2.5 py-2 space-y-1">
+                                <div className="text-emerald-500 font-bold text-[9px] uppercase tracking-wider mb-1">Resistance</div>
+                                <div className="flex justify-between"><span className="text-neutral-500">R1</span><span className="text-emerald-400">₹{scanData.levels.R1.toFixed(0)}</span></div>
+                                <div className="flex justify-between"><span className="text-neutral-500">R2</span><span className="text-neutral-300">₹{scanData.levels.R2.toFixed(0)}</span></div>
+                                <div className="flex justify-between"><span className="text-neutral-500">R3</span><span className="text-neutral-400">₹{scanData.levels.R3.toFixed(0)}</span></div>
+                              </div>
+                              <div className="bg-rose-500/5 border border-rose-500/10 rounded-lg px-2.5 py-2 space-y-1">
+                                <div className="text-rose-500 font-bold text-[9px] uppercase tracking-wider mb-1">Support</div>
+                                <div className="flex justify-between"><span className="text-neutral-500">S1</span><span className="text-rose-400">₹{scanData.levels.S1.toFixed(0)}</span></div>
+                                <div className="flex justify-between"><span className="text-neutral-500">S2</span><span className="text-neutral-300">₹{scanData.levels.S2.toFixed(0)}</span></div>
+                                <div className="flex justify-between"><span className="text-neutral-500">S3</span><span className="text-neutral-400">₹{scanData.levels.S3.toFixed(0)}</span></div>
+                              </div>
+                            </div>
+
+                            {/* Engine status */}
+                            <div className="flex items-center justify-between pt-2 border-t border-neutral-800">
+                              {hasCE ? (
+                                <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold">CE Trigger @ {hasCE}</span>
+                              ) : hasPE ? (
+                                <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30 text-[10px] font-bold">PE Trigger @ {hasPE}</span>
+                              ) : (
+                                <span className="text-[10px] text-neutral-500">No trigger yet</span>
+                              )}
+                              <span className="text-[10px] font-mono text-neutral-600">RDX {scanData.rdx?.toFixed(1) ?? '--'}</span>
+                            </div>
+                          </>
+                        ) : (
+                          /* No scan data yet */
+                          <div className="pt-2 border-t border-neutral-800/50 text-[11px] text-neutral-600 text-center py-3">
+                            {isActive ? (
+                              <span className="text-emerald-500/70">Position open — see Active Stocks tab</span>
+                            ) : isPending ? (
+                              <span className="text-amber-500/70">Sustain period in progress — see Pending Stocks tab</span>
+                            ) : (
+                              'Awaiting 9:25 AM scan data'
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
                   );
                 })}
