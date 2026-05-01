@@ -301,15 +301,20 @@ export class ShoonyaService implements OnModuleInit {
     async dailyTokenRefresh() {
         this.logger.log('⏰ 9:00 AM Daily Token Refresh starting...');
 
-        // Clear in-memory + DB token so authenticate() goes straight to QuickAuth
+        // Save existing token — restore it if QuickAuth fails so system isn't left stranded
+        const savedToken = this.sessionToken;
+        let savedDbToken: string | null = null;
+
+        // Clear in-memory + DB so authenticate() goes straight to QuickAuth
         this.sessionToken = null;
         try {
             const cfg = await this.prisma.shoonyaConfig.findFirst();
+            savedDbToken = cfg?.sessionToken || null;
             if (cfg) await this.prisma.shoonyaConfig.update({ where: { id: cfg.id }, data: { sessionToken: '' } });
         } catch { /* non-fatal */ }
 
-        // 1️⃣ QuickAuth — single HTTP POST, no browser required
-        this.logger.log('🔑 Step 1: Attempting QuickAuth (no Chrome)...');
+        // QuickAuth — single HTTP POST, no browser required
+        this.logger.log('🔑 Attempting QuickAuth...');
         const quickAuthOk = await this.authenticate();
         if (quickAuthOk && this.sessionToken) {
             this.logger.log('✅ Daily token refresh via QuickAuth succeeded.');
@@ -317,19 +322,21 @@ export class ShoonyaService implements OnModuleInit {
             return;
         }
 
-        // 2️⃣ QuickAuth failed — fall back to Chrome headless login
-        this.logger.warn('⚠️ QuickAuth failed. Falling back to Chrome auto-connect...');
-        const result = await this.autoConnect();
-        if (result.success) {
-            this.logger.log('✅ Daily token refresh via Chrome succeeded.');
+        // QuickAuth failed — restore the previous token so trading isn't blocked
+        this.logger.warn('⚠️ QuickAuth failed. Restoring previous session token...');
+        const restoreToken = savedToken || savedDbToken;
+        if (restoreToken) {
+            this.sessionToken = restoreToken;
+            try {
+                const cfg = await this.prisma.shoonyaConfig.findFirst();
+                if (cfg) await this.prisma.shoonyaConfig.update({ where: { id: cfg.id }, data: { sessionToken: restoreToken } });
+            } catch { /* non-fatal */ }
+            this.logger.log('🔄 Previous token restored. Will validate on next API call.');
         } else {
-            this.logger.error(`❌ Both QuickAuth and Chrome failed: ${result.message}`);
+            this.logger.error('❌ QuickAuth failed and no previous token available. Inject manually via /shoonya-set-session.');
         }
 
-        if (this.onSessionRefreshed) {
-            this.logger.log('🔄 Calling registered NSE token refresh hook...');
-            await this.onSessionRefreshed();
-        }
+        if (this.onSessionRefreshed) await this.onSessionRefreshed();
     }
 
     async forceReauth(): Promise<boolean> {
