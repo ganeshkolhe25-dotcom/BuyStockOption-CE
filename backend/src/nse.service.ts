@@ -370,7 +370,7 @@ export class NseService implements OnModuleInit {
         for (const sym of priceFiltered) {
             const indicators = await this.fetchIndicatorsFromShoonya(sym);
             if (indicators) {
-                const isRangebound  = indicators.adx < 25;
+                const isRangebound  = indicators.adx < 30;
                 const hasRange      = indicators.atrPct > 1.5;
                 const isOverstretched = indicators.rsi > 70 || indicators.rsi < 30;
                 if (isRangebound && hasRange && isOverstretched) {
@@ -381,7 +381,7 @@ export class NseService implements OnModuleInit {
             await new Promise(res => setTimeout(res, 150));
         }
 
-        this.logger.log(`[5 EMA] Universe ready: ${universe.length} mean-reversion stocks (ADX<25, ATR%>1.5%, RSI extreme) from Custom Universe.`);
+        this.logger.log(`[5 EMA] Universe ready: ${universe.length} mean-reversion stocks (ADX<30, ATR%>1.5%, RSI extreme) from Custom Universe.`);
         return universe;
     }
 

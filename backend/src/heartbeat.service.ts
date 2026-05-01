@@ -184,7 +184,7 @@ export class HeartbeatService {
                         ? entry.triggerPrice * 1.0005
                         : entry.triggerPrice * 0.9995;
                 } else {
-                    const bufferPct = isEma ? 0.003 : 0.0005;
+                    const bufferPct = isEma ? 0.005 : 0.0005;
                     sustainThreshold = entry.type === 'CE'
                         ? entry.triggerPrice * (1 - bufferPct)
                         : entry.triggerPrice * (1 + bufferPct);
@@ -367,8 +367,8 @@ export class HeartbeatService {
                 // 1. Entry distance filter: reject if price drifted > 0.7% from trigger
                 //    Prevents late/chasing entries where R:R and SL calc are already stale
                 const entryDistPct = Math.abs(cmp - triggerPrice) / triggerPrice;
-                if (entryDistPct > 0.007) {
-                    const distMsg = `STRATEGY REJECT (ENTRY DISTANCE): Entry ₹${cmp} is ${(entryDistPct * 100).toFixed(2)}% from trigger ₹${triggerPrice.toFixed(2)} (max 0.7%)`;
+                if (entryDistPct > 0.012) {
+                    const distMsg = `STRATEGY REJECT (ENTRY DISTANCE): Entry ₹${cmp} is ${(entryDistPct * 100).toFixed(2)}% from trigger ₹${triggerPrice.toFixed(2)} (max 1.2%)`;
                     this.paperTrading.logFailedTrade(symbol, type, cmp, distMsg, strategyName);
                     this.logger.warn(`❌ [${symbol}] ${distMsg}`);
                     return;
@@ -490,9 +490,9 @@ export class HeartbeatService {
         // Single batch LTP call — reads WS tick cache, falls back to one REST batch
         const ltpMap = await this.nseService.getBatchLTP(eligibleStocks.map((s: any) => s.symbol));
 
-        // Directional fresh-cross detectors — 0.5% window on the correct side only
-        const freshCE = (price: number, trigger: number) => price >= trigger && price <= trigger * 1.005;
-        const freshPE = (price: number, trigger: number) => price <= trigger && price >= trigger * 0.995;
+        // Directional fresh-cross detectors — 1% window on the correct side only
+        const freshCE = (price: number, trigger: number) => price >= trigger && price <= trigger * 1.01;
+        const freshPE = (price: number, trigger: number) => price <= trigger && price >= trigger * 0.99;
 
         for (const stock of eligibleStocks) {
             const ltp = ltpMap[stock.symbol];
@@ -562,12 +562,12 @@ export class HeartbeatService {
                 this.logger.debug(`[${stock.symbol}] GANN_9 blocked: no RDX data available`);
                 continue;
             }
-            if (tradeType === 'CE' && rdx < 55) {
-                this.logger.debug(`[${stock.symbol}] GANN_9 CE blocked: RDX=${rdx.toFixed(1)} < 55`);
+            if (tradeType === 'CE' && rdx < 50) {
+                this.logger.debug(`[${stock.symbol}] GANN_9 CE blocked: RDX=${rdx.toFixed(1)} < 50`);
                 continue;
             }
-            if (tradeType === 'PE' && rdx > 45) {
-                this.logger.debug(`[${stock.symbol}] GANN_9 PE blocked: RDX=${rdx.toFixed(1)} > 45`);
+            if (tradeType === 'PE' && rdx > 50) {
+                this.logger.debug(`[${stock.symbol}] GANN_9 PE blocked: RDX=${rdx.toFixed(1)} > 50`);
                 continue;
             }
 
@@ -576,10 +576,10 @@ export class HeartbeatService {
             const ltpBeyondPct = tradeType === 'CE'
                 ? (ltp - trigger) / trigger
                 : (trigger - ltp) / trigger;
-            if (ltpBeyondPct > 0.005) {
+            if (ltpBeyondPct > 0.01) {
                 this.logger.debug(
                     `[${stock.symbol}] GANN_9 skipped (overextended): LTP ₹${ltp} is ` +
-                    `${(ltpBeyondPct * 100).toFixed(2)}% beyond trigger ₹${trigger.toFixed(2)} (max 0.5%)`
+                    `${(ltpBeyondPct * 100).toFixed(2)}% beyond trigger ₹${trigger.toFixed(2)} (max 1%)`
                 );
                 continue;
             }

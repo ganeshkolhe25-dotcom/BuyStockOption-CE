@@ -104,7 +104,7 @@ export class ScannerService implements OnModuleInit {
             try {
                 const universe = await this.nseService.buildEma5Universe();
                 await this.cacheManager.set('EMA5_UNIVERSE', JSON.stringify(universe), 43200000);
-                this.logger.log(`✅ 5 EMA Universe cached: ${universe.length} stocks (ADX<25, ATR%>1.5%, RSI extreme).`);
+                this.logger.log(`✅ 5 EMA Universe cached: ${universe.length} stocks (ADX<30, ATR%>1.5%, RSI extreme).`);
 
                 // Subscribe filtered EMA universe to WS — these are the only stocks
                 // the 5-EMA scanner will monitor intraday, keeping total subscriptions < 100
@@ -272,9 +272,9 @@ export class ScannerService implements OnModuleInit {
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
         if (timeStr < '09:15:00' || timeStr > '15:15:00') return;
 
-        // Active session windows only — skip mid-day chop (11:05 AM – 1:30 PM)
-        const inMorningWindow   = timeStr >= '09:30:00' && timeStr <= '11:05:00';
-        const inAfternoonWindow = timeStr >= '13:30:00' && timeStr <= '15:05:00';
+        // Active session windows only — skip mid-day chop (11:30 AM – 1:30 PM)
+        const inMorningWindow   = timeStr >= '09:30:00' && timeStr <= '11:30:00';
+        const inAfternoonWindow = timeStr >= '13:30:00' && timeStr <= '15:15:00';
         if (!inMorningWindow && !inAfternoonWindow) {
             this.logger.debug(`5 EMA PE: Outside active windows (${timeStr}). Skipping.`);
             return;
@@ -343,15 +343,15 @@ export class ScannerService implements OnModuleInit {
     /**
      * Automated 5 EMA CE (Buy) Strategy — 15-min candles, per original strategy video.
      * Only detects CE signals. Runs 5 seconds after every 15-min candle close.
-     * Active windows: 9:30–11:05 AM and 1:30–3:05 PM IST.
+     * Active windows: 9:30–11:30 AM and 1:30–3:15 PM IST.
      */
     @Cron('5 */15 9-15 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async automatedEma5_15mCeScan() {
         const now = new Date();
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
 
-        const inMorningWindow   = timeStr >= '09:30:00' && timeStr <= '11:05:00';
-        const inAfternoonWindow = timeStr >= '13:30:00' && timeStr <= '15:05:00';
+        const inMorningWindow   = timeStr >= '09:30:00' && timeStr <= '11:30:00';
+        const inAfternoonWindow = timeStr >= '13:30:00' && timeStr <= '15:15:00';
         if (!inMorningWindow && !inAfternoonWindow) {
             this.logger.debug(`5 EMA CE: Outside active windows (${timeStr}). Skipping.`);
             return;

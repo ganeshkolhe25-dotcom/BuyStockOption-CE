@@ -100,11 +100,11 @@ export class Ema5Service {
         // ── PE Setup: alert candle CLOSES above EMA (wick may cross — close is the signal) ──
         if (alertClose > emaAtAlert) {
             if (actLow < alertLow) {
-                // RSI > 50 confirms price is above midpoint — overstretched above EMA
-                if (latestRsi !== null && latestRsi < 50) {
-                    return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
-                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be >50 for PE (above midpoint)` };
-                }
+                // RSI filter removed — was: RSI > 50 required for PE
+                // if (latestRsi !== null && latestRsi < 50) {
+                //     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
+                //         status: `Blocked: RSI=${latestRsi.toFixed(1)} must be >50 for PE (above midpoint)` };
+                // }
                 if (!volumeSurge) {
                     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
                         status: 'Blocked: No volume surge on activation candle (PE)' };
@@ -128,11 +128,11 @@ export class Ema5Service {
         // ── CE Setup: alert candle CLOSES below EMA (wick may cross — close is the signal) ──
         if (alertClose < emaAtAlert) {
             if (actHigh > alertHigh) {
-                // RSI < 50 confirms price is below midpoint — overstretched below EMA
-                if (latestRsi !== null && latestRsi > 50) {
-                    return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
-                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be <50 for CE (below midpoint)` };
-                }
+                // RSI filter removed — was: RSI < 50 required for CE
+                // if (latestRsi !== null && latestRsi > 50) {
+                //     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
+                //         status: `Blocked: RSI=${latestRsi.toFixed(1)} must be <50 for CE (below midpoint)` };
+                // }
                 if (!volumeSurge) {
                     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
                         status: 'Blocked: No volume surge on activation candle (CE)' };
