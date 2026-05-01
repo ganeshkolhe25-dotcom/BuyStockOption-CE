@@ -322,8 +322,17 @@ export class ShoonyaService implements OnModuleInit {
             return;
         }
 
-        // QuickAuth failed — restore the previous token so trading isn't blocked
-        this.logger.warn('⚠️ QuickAuth failed. Restoring previous session token...');
+        // QuickAuth failed — try Chrome headless login as fallback
+        this.logger.warn('⚠️ QuickAuth failed. Trying Chrome auto-connect...');
+        const chromeResult = await this.autoConnect();
+        if (chromeResult.success && this.sessionToken) {
+            this.logger.log('✅ Daily token refresh via Chrome succeeded.');
+            if (this.onSessionRefreshed) await this.onSessionRefreshed();
+            return;
+        }
+
+        // Both failed — restore the previous token so trading isn't blocked
+        this.logger.warn('⚠️ Chrome also failed. Restoring previous session token...');
         const restoreToken = savedToken || savedDbToken;
         if (restoreToken) {
             this.sessionToken = restoreToken;
@@ -333,7 +342,7 @@ export class ShoonyaService implements OnModuleInit {
             } catch { /* non-fatal */ }
             this.logger.log('🔄 Previous token restored. Will validate on next API call.');
         } else {
-            this.logger.error('❌ QuickAuth failed and no previous token available. Inject manually via /shoonya-set-session.');
+            this.logger.error('❌ All auth methods failed. Inject manually via /shoonya-set-session.');
         }
 
         if (this.onSessionRefreshed) await this.onSessionRefreshed();
