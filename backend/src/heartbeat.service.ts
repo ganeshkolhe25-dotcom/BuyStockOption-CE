@@ -367,8 +367,8 @@ export class HeartbeatService {
                 // 1. Entry distance filter: reject if price drifted > 0.7% from trigger
                 //    Prevents late/chasing entries where R:R and SL calc are already stale
                 const entryDistPct = Math.abs(cmp - triggerPrice) / triggerPrice;
-                if (entryDistPct > 0.012) {
-                    const distMsg = `STRATEGY REJECT (ENTRY DISTANCE): Entry ₹${cmp} is ${(entryDistPct * 100).toFixed(2)}% from trigger ₹${triggerPrice.toFixed(2)} (max 1.2%)`;
+                if (entryDistPct > 0.01) {
+                    const distMsg = `STRATEGY REJECT (ENTRY DISTANCE): Entry ₹${cmp} is ${(entryDistPct * 100).toFixed(2)}% from trigger ₹${triggerPrice.toFixed(2)} (max 1%)`;
                     this.paperTrading.logFailedTrade(symbol, type, cmp, distMsg, strategyName);
                     this.logger.warn(`❌ [${symbol}] ${distMsg}`);
                     return;
