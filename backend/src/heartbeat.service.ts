@@ -167,27 +167,37 @@ export class HeartbeatService {
                     continue;
                 }
 
-                // EMA_5 uses a wider 0.3% buffer (pullback after crossover is normal)
-                // Gann strategies use tight 0.05% buffer
+                // Strategy flags used throughout this block
                 const isEma = entry.strategyName === 'EMA_5';
                 const isGannAngle = entry.strategyName === 'GANN_ANGLE';
                 const isCandleBreakout = entry.strategyName === 'CANDLE_BREAKOUT';
-                const bufferPct = isEma ? 0.003 : 0.0005;
-                const buffer = entry.triggerPrice * bufferPct;
-
-                let isSustaining = false;
-                if (entry.type === 'CE') {
-                    isSustaining = ltp >= (entry.triggerPrice - buffer);
-                } else {
-                    isSustaining = ltp <= (entry.triggerPrice + buffer);
-                }
-
                 const isGann9 = entry.strategyName === 'GANN_9';
 
-                // GANN_9: allow free movement during the 3-min wait — only check at the final mark.
+                // Sustain threshold: the price level LTP must be at/beyond to count as "still holding"
+                // GANN_9: 0.05% ABOVE trigger (CE) / BELOW trigger (PE) — small positive confirmation,
+                //         avoids tick-noise from a price that just barely kissed the level and bounced
+                // EMA_5: 0.3% below trigger (wide — mean-reversion pullbacks are normal after crossover)
+                // Other Gann: 0.05% below trigger (tight symmetric buffer)
+                let sustainThreshold: number;
+                if (isGann9) {
+                    sustainThreshold = entry.type === 'CE'
+                        ? entry.triggerPrice * 1.0005
+                        : entry.triggerPrice * 0.9995;
+                } else {
+                    const bufferPct = isEma ? 0.003 : 0.0005;
+                    sustainThreshold = entry.type === 'CE'
+                        ? entry.triggerPrice * (1 - bufferPct)
+                        : entry.triggerPrice * (1 + bufferPct);
+                }
+
+                const isSustaining = entry.type === 'CE'
+                    ? ltp >= sustainThreshold
+                    : ltp <= sustainThreshold;
+
+                // GANN_9: allow free movement during the wait — only check at the final 5-min mark.
                 // EMA_5 / GANN_ANGLE / CANDLE_BREAKOUT: invalidate immediately if LTP moves away.
                 if (!isSustaining && !isGann9) {
-                    const invalidMsg = `Signal Invalidated: LTP ₹${ltp} moved away from ${entry.type} trigger ₹${entry.triggerPrice} during sustain period.`;
+                    const invalidMsg = `Signal Invalidated: LTP ₹${ltp} moved away from ${entry.type} sustain threshold ₹${sustainThreshold.toFixed(2)} (trigger ₹${entry.triggerPrice}) during sustain period.`;
                     this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
                     this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
                     await this.cacheManager.del(key);
@@ -204,7 +214,7 @@ export class HeartbeatService {
                 if (timeElapsedMs >= sustainMs) {
                     // Final check at sustain mark — kill if not sustaining (applies to all strategies)
                     if (!isSustaining) {
-                        const invalidMsg = `Signal Invalidated at 5-min check: LTP ₹${ltp} not sustaining ${entry.type} trigger ₹${entry.triggerPrice}.`;
+                        const invalidMsg = `Signal Invalidated at 5-min check: LTP ₹${ltp} not sustaining ${entry.type} threshold ₹${sustainThreshold.toFixed(2)} (trigger ₹${entry.triggerPrice}).`;
                         this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
                         this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
                         await this.cacheManager.del(key);
@@ -215,27 +225,61 @@ export class HeartbeatService {
                     // GANN_9: verify the last completed 5-min candle actually CLOSED above/below the trigger
                     // This is the candle-close confirmation — prevents acting on a wick touch that reversed
                     if (isGann9) {
-                        const candleClose = await this.getLastCompletedCandleClose(entry.symbol);
-                        if (candleClose !== null) {
-                            const confirmedByCandle = entry.type === 'CE'
-                                ? candleClose >= entry.triggerPrice
-                                : candleClose <= entry.triggerPrice;
-                            if (!confirmedByCandle) {
-                                const msg = `5-min candle close ₹${candleClose} did not confirm ${entry.type} trigger ₹${entry.triggerPrice.toFixed(2)}. Fake breakout — ignored.`;
+                        const candle = await this.getLastCompletedCandle(entry.symbol);
+                        if (candle !== null) {
+                            // Volatility filter: skip if candle range < 0.1% of trigger (sluggish/flat price action)
+                            if (candle.range < entry.triggerPrice * 0.001) {
+                                const msg = `5-min candle range ₹${candle.range.toFixed(2)} < 0.1% of trigger ₹${entry.triggerPrice.toFixed(2)}. Low volatility — ignored.`;
                                 this.logger.warn(`❌ [${entry.symbol}] ${msg}`);
                                 this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, msg, entry.strategyName);
                                 await this.cacheManager.del(key);
                                 updatedKeys = updatedKeys.filter(k => k !== key);
                                 continue;
                             }
-                            this.logger.log(`📊 [${entry.symbol}] 5-min candle close ₹${candleClose} confirms ${entry.type} above trigger ₹${entry.triggerPrice.toFixed(2)}.`);
+                            // Candle close must be >= trigger×1.001 (CE) or <= trigger×0.999 (PE) — 0.1% buffer filters noise
+                            const confirmedByCandle = entry.type === 'CE'
+                                ? candle.close >= entry.triggerPrice * 1.001
+                                : candle.close <= entry.triggerPrice * 0.999;
+                            if (!confirmedByCandle) {
+                                const msg = `5-min candle close ₹${candle.close} did not confirm ${entry.type} trigger ₹${entry.triggerPrice.toFixed(2)} (±0.1% buffer). Fake breakout — ignored.`;
+                                this.logger.warn(`❌ [${entry.symbol}] ${msg}`);
+                                this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, msg, entry.strategyName);
+                                await this.cacheManager.del(key);
+                                updatedKeys = updatedKeys.filter(k => k !== key);
+                                continue;
+                            }
+                            // Candle strength check: ideal breakout has entire candle body clear of trigger
+                            // CE strong = candle low > trigger (no wick below), PE strong = candle high < trigger
+                            const strongCandle = entry.type === 'CE'
+                                ? candle.low > entry.triggerPrice
+                                : candle.high < entry.triggerPrice;
+                            if (!strongCandle) {
+                                this.logger.warn(
+                                    `⚠️ [${entry.symbol}] Weak candle: ${entry.type === 'CE'
+                                        ? `low ₹${candle.low} ≤ trigger ₹${entry.triggerPrice.toFixed(2)}`
+                                        : `high ₹${candle.high} ≥ trigger ₹${entry.triggerPrice.toFixed(2)}`
+                                    } — wick crosses trigger, lower conviction. Proceeding (close confirmed).`
+                                );
+                            }
+                            this.logger.log(
+                                `📊 [${entry.symbol}] CANDLE CONFIRM [${strongCandle ? 'STRONG ✅' : 'WEAK ⚠️'}]: ` +
+                                `close ₹${candle.close} | high ₹${candle.high} | low ₹${candle.low} | ` +
+                                `range ₹${candle.range.toFixed(2)} | trigger ₹${entry.triggerPrice.toFixed(2)} | ` +
+                                `sustain threshold ₹${sustainThreshold.toFixed(2)}`
+                            );
                         } else {
                             this.logger.warn(`[${entry.symbol}] Could not fetch 5-min candle — proceeding with tick confirmation.`);
                         }
                     }
 
                     const label = (isGannAngle || isCandleBreakout) ? 'IMMEDIATE' : isEma ? '1-MIN' : '5-MIN';
-                    this.logger.log(`🚀 ${label} SIGNAL CONFIRMED FOR [${entry.symbol}] AT ₹${ltp}! Triggering ${entry.type} Option Entry.`);
+                    const entryDistPct = isGann9
+                        ? ((Math.abs(ltp - entry.triggerPrice) / entry.triggerPrice) * 100).toFixed(2)
+                        : null;
+                    const triggerInfo = isGann9
+                        ? ` | Trigger ₹${entry.triggerPrice.toFixed(2)} → Entry ₹${ltp} (dist ${entryDistPct}%) | Sustain ₹${sustainThreshold.toFixed(2)}`
+                        : '';
+                    this.logger.log(`🚀 ${label} SIGNAL CONFIRMED FOR [${entry.symbol}] AT ₹${ltp}! Triggering ${entry.type} Option Entry.${triggerInfo}`);
 
                     // Remove from watchlist so we don't buy it twice
                     await this.cacheManager.del(key);
@@ -243,7 +287,7 @@ export class HeartbeatService {
 
                     // Proceed to Phase 3: Dynamic Option Selection & Shoonya Execution
                     // We specifically pass `ltp` (Live Market Price) instead of the static initial trigger price
-                    await this.executeOptionTrade(entry.symbol, ltp, entry.type, entry.targetPrice, entry.slPrice, entry.strategyName);
+                    await this.executeOptionTrade(entry.symbol, ltp, entry.type, entry.targetPrice, entry.slPrice, entry.strategyName, entry.triggerPrice);
                 } else {
                     const minsLeft = ((sustainMs - timeElapsedMs) / 60000).toFixed(1);
                     this.logger.debug(`[${entry.symbol}] Sustaining smoothly at ₹${ltp}. T-Minus ${minsLeft} minutes to Target Execution.`);
@@ -261,7 +305,7 @@ export class HeartbeatService {
     /**
      * Pipeline the Verified setup directly to the Broker Module
      */
-    private async executeOptionTrade(symbol: string, cmp: number, type: 'CE' | 'PE', targetPrice: number, slPrice: number, strategyName: string = 'GANN_9') {
+    private async executeOptionTrade(symbol: string, cmp: number, type: 'CE' | 'PE', targetPrice: number, slPrice: number, strategyName: string = 'GANN_9', triggerPrice?: number) {
         try {
             const preferITM = strategyName === 'EMA_5'; // ITM = better Delta + less decay for mean-reversion
             const contract = await this.shoonyaService.findAtmOption(symbol, cmp, type, preferITM);
@@ -314,7 +358,66 @@ export class HeartbeatService {
                 return;
             }
 
-            // GANN_9 / EMA_5: execute immediately at Ask Price (existing behaviour)
+            // ─────────────────────────────────────────────────────────────────────────
+            // GANN_9: all post-entry filters run here before the order is placed.
+            // triggerPrice is always present for GANN_9 (passed from watchlist entry).
+            // ─────────────────────────────────────────────────────────────────────────
+            if (strategyName === 'GANN_9' && triggerPrice !== undefined) {
+
+                // 1. Entry distance filter: reject if price drifted > 0.7% from trigger
+                //    Prevents late/chasing entries where R:R and SL calc are already stale
+                const entryDistPct = Math.abs(cmp - triggerPrice) / triggerPrice;
+                if (entryDistPct > 0.007) {
+                    const distMsg = `STRATEGY REJECT (ENTRY DISTANCE): Entry ₹${cmp} is ${(entryDistPct * 100).toFixed(2)}% from trigger ₹${triggerPrice.toFixed(2)} (max 0.7%)`;
+                    this.paperTrading.logFailedTrade(symbol, type, cmp, distMsg, strategyName);
+                    this.logger.warn(`❌ [${symbol}] ${distMsg}`);
+                    return;
+                }
+
+                // 2. POST-ENTRY R:R check — uses actual entry price, not trigger (only this decides the trade)
+                const entryRisk   = Math.abs(cmp - slPrice);
+                const entryReward = Math.abs(targetPrice - cmp);
+                if (entryReward < 2 * entryRisk) {
+                    const rrMsg = `STRATEGY REJECT (POST-ENTRY R:R): ${(entryReward / entryRisk).toFixed(1)}:1 < 2:1 at entry ₹${cmp} (SL ₹${slPrice}, Target ₹${targetPrice})`;
+                    this.paperTrading.logFailedTrade(symbol, type, cmp, rrMsg, strategyName);
+                    this.logger.warn(`❌ [${symbol}] ${rrMsg}`);
+                    return;
+                }
+
+                // 3. SL distance check: if entry has drifted, SL distance grows → cap at 1% of trigger
+                //    Prevents trades where the effective stop loss is abnormally large
+                const maxRiskPts = triggerPrice * 0.01;
+                if (entryRisk > maxRiskPts) {
+                    const slMsg = `STRATEGY REJECT (SL DISTANCE): Entry risk ₹${entryRisk.toFixed(2)} > max ₹${maxRiskPts.toFixed(2)} (1% of trigger ₹${triggerPrice.toFixed(2)})`;
+                    this.paperTrading.logFailedTrade(symbol, type, cmp, slMsg, strategyName);
+                    this.logger.warn(`❌ [${symbol}] ${slMsg}`);
+                    return;
+                }
+
+                // 4. Option slippage check: wide bid-ask spread signals illiquid/over-inflated premium
+                if (optionPremiumInfo.bidPrice > 0) {
+                    const spread = optionPremiumInfo.askPrice - optionPremiumInfo.bidPrice;
+                    const spreadPct = spread / optionPremiumInfo.askPrice;
+                    if (spreadPct > 0.15) {
+                        const slippageMsg = `STRATEGY REJECT (SLIPPAGE): Spread ₹${spread.toFixed(2)} is ${(spreadPct * 100).toFixed(1)}% of ask ₹${optionPremiumInfo.askPrice} (max 15%)`;
+                        this.paperTrading.logFailedTrade(symbol, type, cmp, slippageMsg, strategyName);
+                        this.logger.warn(`❌ [${symbol}] ${slippageMsg}`);
+                        return;
+                    }
+                }
+
+                // 5. Comprehensive POST-ENTRY setup log (all values in one line for easy audit)
+                const preRisk   = Math.abs(triggerPrice - slPrice);
+                const preReward = Math.abs(targetPrice - triggerPrice);
+                this.logger.log(
+                    `📐 [${symbol}] GANN_9 POST-ENTRY SETUP:\n` +
+                    `   Trigger ₹${triggerPrice.toFixed(2)} | Entry ₹${cmp} (dist ${(entryDistPct * 100).toFixed(2)}%) | SL ₹${slPrice} | Target ₹${targetPrice}\n` +
+                    `   PRE-ENTRY  R:R → Risk ₹${preRisk.toFixed(2)} / Reward ₹${preReward.toFixed(2)} = 1:${(preReward / preRisk).toFixed(1)}\n` +
+                    `   POST-ENTRY R:R → Risk ₹${entryRisk.toFixed(2)} / Reward ₹${entryReward.toFixed(2)} = 1:${(entryReward / entryRisk).toFixed(1)}\n` +
+                    `   Option: bid ₹${optionPremiumInfo.bidPrice} / ask ₹${optionPremiumInfo.askPrice} | Lot ${contract.lotSize} | Contract ${contract.tradingSymbol}`
+                );
+            }
+
             // 🛑 Lot Price Constraint: Total Investment (Qty * Price) must be <= 40,000
             const lotValue = contract.lotSize * optionPremiumInfo.askPrice;
             if (lotValue > 40000) {
@@ -468,6 +571,28 @@ export class HeartbeatService {
                 continue;
             }
 
+            // Overextended move filter: if LTP already > 0.5% beyond trigger, breakout has run too far.
+            // Entering here means chasing — skip and wait for the next fresh cross.
+            const ltpBeyondPct = tradeType === 'CE'
+                ? (ltp - trigger) / trigger
+                : (trigger - ltp) / trigger;
+            if (ltpBeyondPct > 0.005) {
+                this.logger.debug(
+                    `[${stock.symbol}] GANN_9 skipped (overextended): LTP ₹${ltp} is ` +
+                    `${(ltpBeyondPct * 100).toFixed(2)}% beyond trigger ₹${trigger.toFixed(2)} (max 0.5%)`
+                );
+                continue;
+            }
+
+            const riskPtsLog   = Math.abs(trigger - sl);
+            const rewardPtsLog = Math.abs(target - trigger);
+            this.logger.log(
+                `📋 GANN_9 PRE-ENTRY SIGNAL: [${stock.symbol}] ${tradeType} | ` +
+                `Trigger ₹${trigger.toFixed(2)} | LTP ₹${ltp} (dist ${(ltpBeyondPct * 100).toFixed(2)}%) | ` +
+                `SL ₹${sl.toFixed(2)} | Target ₹${target.toFixed(2)} | ` +
+                `Pre-Entry Risk ₹${riskPtsLog.toFixed(2)} | Pre-Entry Reward ₹${rewardPtsLog.toFixed(2)} | ` +
+                `Pre-Entry R:R 1:${(rewardPtsLog / riskPtsLog).toFixed(1)} | RDX ${rdx.toFixed(1)}`
+            );
             await this.addToWatchlist(stock.symbol, trigger, tradeType, target, sl, 'GANN_9');
         }
     }
@@ -767,16 +892,20 @@ export class HeartbeatService {
         this.logger.log('[2-Candle] Half-exit tracker cleared for new day.');
     }
 
-    /** Fetch the close price of the most recently COMPLETED 5-min candle for a symbol.
-     *  Shoonya returns candles newest-first, so index[0] = currently forming, index[1] = last completed. */
-    private async getLastCompletedCandleClose(symbol: string): Promise<number | null> {
+    /** Fetch OHLC of the most recently COMPLETED 5-min candle for a symbol.
+     *  Shoonya returns candles newest-first: index[0] = forming, index[1] = last completed. */
+    private async getLastCompletedCandle(symbol: string): Promise<{ close: number; high: number; low: number; range: number } | null> {
         const token = this.nseService.getToken(symbol);
         if (!token) return null;
         try {
             const candles = await this.shoonyaService.getTimePriceSeries('NSE', token, '5', 1);
             if (!candles || candles.length < 2) return null;
-            const close = parseFloat(candles[1]?.intc || '0');
-            return close > 0 ? close : null;
+            const c     = candles[1];
+            const close = parseFloat(c?.intc || '0');
+            const high  = parseFloat(c?.inth || '0');
+            const low   = parseFloat(c?.intl || '0');
+            if (close <= 0) return null;
+            return { close, high, low, range: high - low };
         } catch (err: any) {
             this.logger.warn(`[${symbol}] 5-min candle fetch failed: ${err.message}`);
             return null;

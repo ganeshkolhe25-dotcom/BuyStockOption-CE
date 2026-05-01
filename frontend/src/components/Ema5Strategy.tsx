@@ -100,7 +100,7 @@ export default function Ema5Strategy({ isEnabled, portfolio, history }: { isEnab
 
            {/* Universe grid */}
            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
-             {CUSTOM_UNIVERSE.filter(u => !u.isIndex).map((uStock) => {
+             {CUSTOM_UNIVERSE.map((uStock) => {
                const activePos = portfolio?.positions?.find((p: any) => p.symbol === uStock.symbol && p.strategyName === 'EMA_5');
                const isActive = !!activePos;
                const livePnl = isActive ? (activePos.currentLtp - activePos.entryPrice) * activePos.qty : null;
@@ -138,17 +138,82 @@ export default function Ema5Strategy({ isEnabled, portfolio, history }: { isEnab
          </div>
       )}
 
-      {activeInnerTab === 'chart' && (
-         <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-6 relative overflow-hidden flex flex-col items-center justify-center min-h-[400px]">
-             <div className="w-full h-full absolute inset-0 opacity-20 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] mix-blend-overlay"></div>
-             <BarChart2 className="w-20 h-20 text-neutral-700 mx-auto mb-4" />
-             <h3 className="text-xl font-bold text-white mb-2">Advanced Real-Time Charting</h3>
-             <p className="text-neutral-500 max-w-sm text-center text-sm">TradingView Lightweight Charts integration module reserved here for visualizing the live 5 EMA crossover dynamically.</p>
-             <button className="mt-6 px-4 py-2 bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-xl text-sm font-bold opacity-50 cursor-not-allowed">
-                 Connect Chart Stream
-             </button>
-         </div>
-      )}
+      {activeInnerTab === 'chart' && (() => {
+        const activePositions = portfolio?.positions?.filter((p: any) => p.strategyName === 'EMA_5') || [];
+        return (
+          <div className="space-y-4">
+            {activePositions.length === 0 ? (
+              <div className="bg-neutral-900 border border-neutral-800 rounded-2xl p-10 flex flex-col items-center justify-center min-h-[300px]">
+                <BarChart2 className="w-12 h-12 text-neutral-700 mb-4" />
+                <p className="text-neutral-500 text-sm">No active EMA_5 positions right now.</p>
+                <p className="text-neutral-600 text-xs mt-1">Positions will appear here once the engine enters a trade.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                {activePositions.map((pos: any, idx: number) => {
+                  const livePnl = (pos.currentLtp - pos.entryPrice) * pos.qty;
+                  const entryStr = pos.entryTime
+                    ? new Date(pos.entryTime).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: true, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                    : '--';
+                  return (
+                    <div key={idx} className="bg-neutral-900 border border-amber-500/30 rounded-2xl p-4 relative overflow-hidden">
+                      <div className="absolute top-0 right-0 w-40 h-40 opacity-10 blur-3xl rounded-full pointer-events-none bg-amber-500" />
+                      <div className="relative z-10 space-y-3">
+                        {/* Header */}
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <div className="font-bold text-base text-white">{pos.symbol}</div>
+                            <div className="text-[11px] text-neutral-500 font-mono mt-0.5">{pos.tradingSymbol || pos.token}</div>
+                          </div>
+                          <span className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-500/15 text-amber-400 border border-amber-500/25 text-[10px] font-bold uppercase">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />Active
+                          </span>
+                        </div>
+                        {/* Type + qty */}
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2 py-0.5 rounded text-xs font-bold ${pos.type === 'CE' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
+                            BUY {pos.type}
+                          </span>
+                          <span className="text-xs font-mono text-neutral-400">x{pos.qty}</span>
+                        </div>
+                        {/* Price row */}
+                        <div className="bg-neutral-950/50 rounded-xl px-3 py-2 grid grid-cols-2 gap-2 text-xs font-mono">
+                          <div>
+                            <div className="text-neutral-500 text-[10px] uppercase mb-0.5">Entry</div>
+                            <div className="text-neutral-200 font-bold">₹{pos.entryPrice}</div>
+                          </div>
+                          <div>
+                            <div className="text-neutral-500 text-[10px] uppercase mb-0.5">LTP</div>
+                            <div className="text-amber-400 font-bold">₹{pos.currentLtp}</div>
+                          </div>
+                        </div>
+                        {/* P&L */}
+                        <div className={`text-center text-lg font-mono font-bold rounded-xl py-2 ${livePnl >= 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
+                          {livePnl >= 0 ? '+' : ''}₹{livePnl.toFixed(2)}
+                        </div>
+                        {/* Entry time */}
+                        <div className="text-[10px] text-neutral-600 font-mono text-center">{entryStr}</div>
+                        {/* Square off */}
+                        <button
+                          onClick={() => handleSquareOff(pos.token)}
+                          disabled={squaringOff === pos.token}
+                          className={`w-full py-2 rounded-xl text-xs font-bold border transition-all ${
+                            squaringOff === pos.token
+                              ? 'bg-neutral-800 border-neutral-700 text-neutral-500 cursor-not-allowed'
+                              : 'bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20'
+                          }`}
+                        >
+                          {squaringOff === pos.token ? 'Squaring Off...' : 'Square Off'}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {activeInnerTab === 'ledger' && (
         <div className="space-y-4">
