@@ -50,7 +50,19 @@ export default function Home() {
   const [watchlist, setWatchlist] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'scanner' | 'watchlist' | 'positions' | 'history'>('scanner');
   const [mainTab, setMainTab] = useState<'dashboard' | 'gann9' | 'gannAngle' | 'ema5' | 'candleBreakout' | 'shoonya'>('dashboard');
-  const [shoonyaConfig, setShoonyaConfig] = useState<any>({ uid: '', pwd: '', factor2: '', vc: '', appkey: '', secretCode: '', webPwd: '', expiryMonth: 'APR', initialFunds: 100000, gann9MaxTrades: 5, gannAngleMaxTrades: 5, ema5MaxTrades: 5, gann9MaxLoss: -10000, gannAngleMaxLoss: -10000, ema5MaxLoss: -10000, gann9MaxProfit: 10000, gannAngleMaxProfit: 10000, ema5MaxProfit: 10000, gann9Enabled: true, gannAngleEnabled: false, ema5Enabled: false });
+  const [shoonyaConfig, setShoonyaConfig] = useState<any>(() => {
+    const ls = typeof window !== 'undefined' ? window.localStorage : null;
+    return {
+      uid: '', pwd: '', factor2: '', vc: '', appkey: '', secretCode: '', webPwd: '',
+      expiryMonth: 'APR', initialFunds: 100000,
+      gann9MaxTrades: 5, gannAngleMaxTrades: 5, ema5MaxTrades: 5,
+      gann9MaxLoss: -10000, gannAngleMaxLoss: -10000, ema5MaxLoss: -10000,
+      gann9MaxProfit: 10000, gannAngleMaxProfit: 10000, ema5MaxProfit: 10000,
+      gann9Enabled: ls?.getItem('cfg_gann9Enabled') !== null ? ls!.getItem('cfg_gann9Enabled') === 'true' : true,
+      gannAngleEnabled: ls?.getItem('cfg_gannAngleEnabled') === 'true',
+      ema5Enabled: ls?.getItem('cfg_ema5Enabled') === 'true',
+    };
+  });
   const [shoonyaStatus, setShoonyaStatus] = useState<string | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [authCode, setAuthCode] = useState('');
@@ -204,11 +216,11 @@ export default function Home() {
     try {
       const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
       const res = await axios.get(`${API_URL}/shoonya-config`);
-      // Merge exactly what returns from DB with defaults
-      setShoonyaConfig((prev: any) => ({
-         ...prev,
-         ...res.data
-      }));
+      const d = res.data;
+      if (d.gann9Enabled !== undefined) localStorage.setItem('cfg_gann9Enabled', String(d.gann9Enabled));
+      if (d.gannAngleEnabled !== undefined) localStorage.setItem('cfg_gannAngleEnabled', String(d.gannAngleEnabled));
+      if (d.ema5Enabled !== undefined) localStorage.setItem('cfg_ema5Enabled', String(d.ema5Enabled));
+      setShoonyaConfig((prev: any) => ({ ...prev, ...d }));
     } catch { }
   };
 
