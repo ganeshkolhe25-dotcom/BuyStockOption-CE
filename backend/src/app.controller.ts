@@ -105,33 +105,35 @@ export class AppController {
       config = await this.prisma.shoonyaConfig.update({
         where: { id: config.id },
         data: {
+          // For credentials and required strings: undefined → Prisma skips the field (no update)
           uid: body.uid,
           pwd: body.pwd,
           factor2: body.factor2,
           vc: body.vc,
           appkey: body.appkey,
+          // Sensitive fields: always fall back to existing DB value if not supplied
           secretCode: body.secretCode || config.secretCode || '',
-          // Preserve existing webPwd if none supplied (GET response strips it for security,
-          // so a page-reload + re-save would otherwise blank it out)
           webPwd: body.webPwd || config.webPwd || '',
-          tradingMode: body.tradingMode || 'PAPER',
-          maxTrades: parseInt(body.maxTrades) || 10,
-          gann9MaxTrades: parseInt(body.gann9MaxTrades) || 5,
-          gannAngleMaxTrades: parseInt(body.gannAngleMaxTrades) || 5,
-          ema5MaxTrades: parseInt(body.ema5MaxTrades) || 5,
-          gann9MaxLoss: parseFloat(body.gann9MaxLoss) || -10000,
-          gannAngleMaxLoss: parseFloat(body.gannAngleMaxLoss) || -10000,
-          ema5MaxLoss: parseFloat(body.ema5MaxLoss) || -10000,
-          gann9MaxProfit: parseFloat(body.gann9MaxProfit) || 10000,
-          gannAngleMaxProfit: parseFloat(body.gannAngleMaxProfit) || 10000,
-          ema5MaxProfit: parseFloat(body.ema5MaxProfit) || 10000,
-          expiryMonth: body.expiryMonth || 'APR',
+          // All other fields: use body value if provided, otherwise keep existing DB value
+          // This makes the endpoint safe for partial updates (e.g. toggle-only calls)
+          tradingMode: body.tradingMode !== undefined ? body.tradingMode : config.tradingMode,
+          maxTrades: body.maxTrades !== undefined ? (parseInt(body.maxTrades) || config.maxTrades) : config.maxTrades,
+          gann9MaxTrades: body.gann9MaxTrades !== undefined ? (parseInt(body.gann9MaxTrades) || config.gann9MaxTrades) : config.gann9MaxTrades,
+          gannAngleMaxTrades: body.gannAngleMaxTrades !== undefined ? (parseInt(body.gannAngleMaxTrades) || config.gannAngleMaxTrades) : config.gannAngleMaxTrades,
+          ema5MaxTrades: body.ema5MaxTrades !== undefined ? (parseInt(body.ema5MaxTrades) || config.ema5MaxTrades) : config.ema5MaxTrades,
+          gann9MaxLoss: body.gann9MaxLoss !== undefined ? (parseFloat(body.gann9MaxLoss) || config.gann9MaxLoss) : config.gann9MaxLoss,
+          gannAngleMaxLoss: body.gannAngleMaxLoss !== undefined ? (parseFloat(body.gannAngleMaxLoss) || config.gannAngleMaxLoss) : config.gannAngleMaxLoss,
+          ema5MaxLoss: body.ema5MaxLoss !== undefined ? (parseFloat(body.ema5MaxLoss) || config.ema5MaxLoss) : config.ema5MaxLoss,
+          gann9MaxProfit: body.gann9MaxProfit !== undefined ? (parseFloat(body.gann9MaxProfit) || config.gann9MaxProfit) : config.gann9MaxProfit,
+          gannAngleMaxProfit: body.gannAngleMaxProfit !== undefined ? (parseFloat(body.gannAngleMaxProfit) || config.gannAngleMaxProfit) : config.gannAngleMaxProfit,
+          ema5MaxProfit: body.ema5MaxProfit !== undefined ? (parseFloat(body.ema5MaxProfit) || config.ema5MaxProfit) : config.ema5MaxProfit,
+          expiryMonth: body.expiryMonth !== undefined ? body.expiryMonth : config.expiryMonth,
           gann9Enabled: body.gann9Enabled !== undefined ? Boolean(body.gann9Enabled) : config.gann9Enabled,
           gannAngleEnabled: body.gannAngleEnabled !== undefined ? Boolean(body.gannAngleEnabled) : config.gannAngleEnabled,
           ema5Enabled: body.ema5Enabled !== undefined ? Boolean(body.ema5Enabled) : config.ema5Enabled,
-          initialFunds: parseFloat(body.initialFunds) || 100000,
-          candleNiftyLots: parseInt(body.candleNiftyLots) || 1,
-          candleBankNiftyLots: parseInt(body.candleBankNiftyLots) || 1,
+          initialFunds: body.initialFunds !== undefined ? (parseFloat(body.initialFunds) || config.initialFunds) : config.initialFunds,
+          candleNiftyLots: body.candleNiftyLots !== undefined ? (parseInt(body.candleNiftyLots) || config.candleNiftyLots) : config.candleNiftyLots,
+          candleBankNiftyLots: body.candleBankNiftyLots !== undefined ? (parseInt(body.candleBankNiftyLots) || config.candleBankNiftyLots) : config.candleBankNiftyLots,
         }
       });
     } else {

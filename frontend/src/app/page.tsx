@@ -314,7 +314,8 @@ export default function Home() {
   };
 
   const handleToggleStrategy = async (strategy: 'gann9' | 'gannAngle' | 'ema5') => {
-    let newConfig = { ...shoonyaConfig };
+    const previousConfig = shoonyaConfig;
+    const newConfig = { ...shoonyaConfig };
     if (strategy === 'gann9') {
        newConfig.gann9Enabled = !newConfig.gann9Enabled;
     } else if (strategy === 'ema5') {
@@ -322,15 +323,29 @@ export default function Home() {
     } else {
        newConfig.gannAngleEnabled = !newConfig.gannAngleEnabled;
     }
-    
+
+    // Optimistic update — update state AND localStorage so refresh survives even if backend is slow
     setShoonyaConfig(newConfig);
-    
-    // Save to backend immediately
+    localStorage.setItem('cfg_gann9Enabled', String(newConfig.gann9Enabled));
+    localStorage.setItem('cfg_gannAngleEnabled', String(newConfig.gannAngleEnabled));
+    localStorage.setItem('cfg_ema5Enabled', String(newConfig.ema5Enabled));
+
     try {
        const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
-       await axios.post(`${API_URL}/shoonya-config`, newConfig);
+       // Send only the enabled flags — avoids accidentally blanking out credentials
+       // (GET response strips pwd/secretCode/webPwd, so they'd be empty in the full config)
+       await axios.post(`${API_URL}/shoonya-config`, {
+         gann9Enabled: newConfig.gann9Enabled,
+         gannAngleEnabled: newConfig.gannAngleEnabled,
+         ema5Enabled: newConfig.ema5Enabled,
+       });
     } catch (e) {
-       console.error("Failed to update config globally", e);
+       console.error("Failed to update strategy toggle", e);
+       // Revert both state and localStorage so they stay consistent
+       setShoonyaConfig(previousConfig);
+       localStorage.setItem('cfg_gann9Enabled', String(previousConfig.gann9Enabled));
+       localStorage.setItem('cfg_gannAngleEnabled', String(previousConfig.gannAngleEnabled));
+       localStorage.setItem('cfg_ema5Enabled', String(previousConfig.ema5Enabled));
     }
   };
 
