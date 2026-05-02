@@ -121,6 +121,70 @@ export class ScannerService implements OnModuleInit {
     }
 
     /**
+     * Gann-9 Dynamic Universe Refresh — Runs every 10 minutes, 9:35 AM–2:30 PM IST (Mon-Fri).
+     *
+     * The 9:25 AM scan only captures stocks that had >= 0.5% pChange at that moment.
+     * Stocks that break out later in the day are missed entirely.
+     * This refresh re-scans the same CUSTOM_TRADING_UNIVERSE and adds any new movers
+     * that were not present in the initial universe — without overwriting existing entries
+     * (Gann levels are computed from prevClose which is static for the day).
+     */
+    @Cron('0 */10 9-14 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    async refreshGann9Universe() {
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+        // Skip the 9:25 AM initial scan window; also stop by 2:30 PM (too late to enter new trades)
+        if (timeStr < '09:35:00' || timeStr > '14:30:00') return;
+
+        const config = await this.prisma.shoonyaConfig.findFirst();
+        if (config && !config.gann9Enabled) return;
+
+        const cachedStr = await this.cacheManager.get<string>('DAILY_SCAN_RESULTS');
+        if (!cachedStr) return; // No initial scan yet — skip
+
+        const scan = JSON.parse(cachedStr);
+        const existingSymbols = new Set<string>((scan.data || []).map((s: any) => s.symbol));
+
+        try {
+            const freshStocks = await this.nseService.scanGainersLosers();
+            const newEntries: any[] = [];
+
+            for (const stock of freshStocks) {
+                if (existingSymbols.has(stock.symbol)) continue; // Already tracked — skip
+
+                const prevClose = stock.prevClose || stock.ltp;
+                const levels = this.gannService.calculateLevels(prevClose);
+                const snapshotStatus = this.gannService.evaluateTradeTriggers(stock.ltp, levels);
+
+                newEntries.push({
+                    ...stock,
+                    openLtp: stock.openPrice || stock.ltp,
+                    prevClose,
+                    levels,
+                    snapshotStatus,
+                });
+            }
+
+            if (newEntries.length === 0) {
+                this.logger.log(`[Gann-9 Refresh] ${timeStr} — No new movers. All qualifying stocks already tracked (${existingSymbols.size} in universe).`);
+                return;
+            }
+
+            const merged = [...(scan.data || []), ...newEntries];
+            await this.cacheManager.set('DAILY_SCAN_RESULTS', JSON.stringify({
+                status: 'success',
+                count: merged.length,
+                data: merged,
+            }), 43200000);
+
+            const newNames = newEntries.map(s => `${s.symbol} ${s.pChange >= 0 ? '+' : ''}${s.pChange.toFixed(1)}%`).join(', ');
+            this.logger.log(`[Gann-9 Refresh] ${timeStr} — +${newEntries.length} new stocks added: [${newNames}] | Total universe: ${merged.length}`);
+        } catch (err: any) {
+            this.logger.error(`[Gann-9 Refresh] Failed: ${err.message}`);
+        }
+    }
+
+    /**
      * Gann Angle Momentum Cache Builder — Runs every 5 minutes, 9:20–11:30 AM IST (Mon-Fri)
      *
      * Replaces the old "scan + add to watchlist immediately" approach.

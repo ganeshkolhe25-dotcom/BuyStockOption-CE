@@ -31,7 +31,7 @@ deploy_backend() {
     --command="cd /home/maddy/BuyStockOption_CE/backend && docker build -t shoonya-backend:latest . 2>&1 | tail -3"
   echo "[BE] Restarting container..."
   "$GCLOUD" compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" \
-    --command="nohup bash -c 'docker stop shoonya-app; docker rm shoonya-app; docker run -d --name shoonya-app --restart always -p 8080:8080 --env-file /home/maddy/vm-app.env shoonya-backend:latest' > /home/maddy/restart.log 2>&1 &"
+    --command="nohup bash -c 'docker stop shoonya-app; docker rm shoonya-app; docker run -d --name shoonya-app --restart always -p 8080:3001 --env-file /home/maddy/vm-app.env shoonya-backend:latest' > /home/maddy/restart.log 2>&1 &"
   sleep 14
   "$GCLOUD" compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" \
     --command="docker ps --format '{{.Names}} {{.Status}}' && docker logs shoonya-app --tail 5 2>&1"

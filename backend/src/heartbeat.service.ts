@@ -71,7 +71,7 @@ export class HeartbeatService {
 
         // Skip symbols where option token resolution failed earlier today
         if (this.fnoExcluded.has(symbol)) {
-            this.logger.debug(`[${symbol}] Not F&O tradeable (excluded today). Skipping.`);
+            this.logger.log(`BLOCKED [FNO Excluded]: [${symbol}] not F&O tradeable today — skipping.`);
             return;
         }
 
@@ -79,7 +79,7 @@ export class HeartbeatService {
         // Different strategies can trade the same symbol independently if their own criteria is met
         const openPositions = await this.paperTrading.getPositions();
         if (openPositions.some(p => p.symbol === symbol && p.strategyName === strategyName)) {
-            this.logger.debug(`[${symbol}] Already has an open ${strategyName} position. Skipping.`);
+            this.logger.log(`BLOCKED [Conflict]: [${symbol}] already has an open ${strategyName} position — skipping.`);
             return;
         }
 
@@ -88,7 +88,7 @@ export class HeartbeatService {
         const hasPendingBuy = Array.from(this.pendingLimitOrders.values())
             .some(o => o.symbol === symbol && o.orderType === 'BUY' && o.strategyName === strategyName);
         if (hasPendingBuy) {
-            this.logger.debug(`[${symbol}] Pending ${strategyName} limit buy already in-flight. Skipping.`);
+            this.logger.log(`BLOCKED [Conflict]: [${symbol}] pending ${strategyName} limit buy already in-flight — skipping.`);
             return;
         }
 
@@ -267,6 +267,25 @@ export class HeartbeatService {
                                 `range ₹${candle.range.toFixed(2)} | trigger ₹${entry.triggerPrice.toFixed(2)} | ` +
                                 `sustain threshold ₹${sustainThreshold.toFixed(2)}`
                             );
+
+                            // ── RVOL Volume Check ─────────────────────────────────────────────
+                            if (candle.rvol === null) {
+                                this.logger.warn(`⚠️ [${entry.symbol}] Insufficient candles for RVOL — skipping volume check, proceeding.`);
+                            } else {
+                                const rvolStr = `Volume ${candle.volume.toFixed(0)} | Avg ${candle.avgVolume.toFixed(0)} | RVOL ${candle.rvol.toFixed(2)}`;
+                                if (candle.rvol < 1.0) {
+                                    const msg = `${rvolStr} | FAIL — Low Volume (< 1.0x)`;
+                                    this.logger.warn(`❌ [${entry.symbol}] VOLUME REJECT: ${msg}`);
+                                    this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, msg, entry.strategyName);
+                                    await this.cacheManager.del(key);
+                                    updatedKeys = updatedKeys.filter(k => k !== key);
+                                    continue;
+                                } else if (candle.rvol < 1.2) {
+                                    this.logger.warn(`⚠️ [${entry.symbol}] WEAK VOLUME: ${rvolStr} | WEAK (1.0–1.2x) — proceeding with caution.`);
+                                } else {
+                                    this.logger.log(`✅ [${entry.symbol}] VOLUME PASS: ${rvolStr} | PASS — Strong Volume (≥ 1.2x).`);
+                                }
+                            }
                         } else {
                             this.logger.warn(`[${entry.symbol}] Could not fetch 5-min candle — proceeding with tick confirmation.`);
                         }
@@ -892,20 +911,35 @@ export class HeartbeatService {
         this.logger.log('[2-Candle] Half-exit tracker cleared for new day.');
     }
 
-    /** Fetch OHLC of the most recently COMPLETED 5-min candle for a symbol.
-     *  Shoonya returns candles newest-first: index[0] = forming, index[1] = last completed. */
-    private async getLastCompletedCandle(symbol: string): Promise<{ close: number; high: number; low: number; range: number } | null> {
+    /** Fetch OHLC + RVOL of the most recently COMPLETED 5-min candle for a symbol.
+     *  Shoonya returns candles newest-first: index[0] = forming, index[1] = last completed.
+     *  daysLimit=2 ensures enough candles for a 10-period volume average.
+     *  rvol is null when fewer than 11 completed candles exist (insufficient history). */
+    private async getLastCompletedCandle(symbol: string): Promise<{ close: number; high: number; low: number; range: number; volume: number; avgVolume: number; rvol: number | null } | null> {
         const token = this.nseService.getToken(symbol);
         if (!token) return null;
         try {
-            const candles = await this.shoonyaService.getTimePriceSeries('NSE', token, '5', 1);
+            const candles = await this.shoonyaService.getTimePriceSeries('NSE', token, '5', 2);
             if (!candles || candles.length < 2) return null;
+            // index[0] = currently forming candle (skip), index[1..] = completed candles
             const c     = candles[1];
             const close = parseFloat(c?.intc || '0');
             const high  = parseFloat(c?.inth || '0');
             const low   = parseFloat(c?.intl || '0');
+            const volume = parseFloat(c?.intv || '0');
             if (close <= 0) return null;
-            return { close, high, low, range: high - low };
+
+            // Need at least 11 completed candles (index 1..11) for a 10-period average
+            const completedCandles = candles.slice(1); // drop the forming candle
+            let rvol: number | null = null;
+            let avgVolume = 0;
+            if (completedCandles.length >= 11) {
+                const last10Vols = completedCandles.slice(0, 10).map(x => parseFloat(x?.intv || '0'));
+                avgVolume = last10Vols.reduce((a, b) => a + b, 0) / last10Vols.length;
+                rvol = avgVolume > 0 ? volume / avgVolume : null;
+            }
+
+            return { close, high, low, range: high - low, volume, avgVolume, rvol };
         } catch (err: any) {
             this.logger.warn(`[${symbol}] 5-min candle fetch failed: ${err.message}`);
             return null;
