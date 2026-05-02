@@ -58,9 +58,9 @@ export default function Home() {
       gann9MaxTrades: 5, gannAngleMaxTrades: 5, ema5MaxTrades: 5,
       gann9MaxLoss: -10000, gannAngleMaxLoss: -10000, ema5MaxLoss: -10000,
       gann9MaxProfit: 10000, gannAngleMaxProfit: 10000, ema5MaxProfit: 10000,
-      gann9Enabled: ls?.getItem('cfg_gann9Enabled') !== null ? ls!.getItem('cfg_gann9Enabled') === 'true' : true,
-      gannAngleEnabled: ls?.getItem('cfg_gannAngleEnabled') === 'true',
-      ema5Enabled: ls?.getItem('cfg_ema5Enabled') === 'true',
+      gann9Enabled: ls ? (ls.getItem('cfg_gann9Enabled') !== null ? ls.getItem('cfg_gann9Enabled') === 'true' : true) : true,
+      gannAngleEnabled: ls ? ls.getItem('cfg_gannAngleEnabled') === 'true' : false,
+      ema5Enabled: ls ? ls.getItem('cfg_ema5Enabled') === 'true' : false,
     };
   });
   const [shoonyaStatus, setShoonyaStatus] = useState<string | null>(null);
