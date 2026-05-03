@@ -643,6 +643,17 @@ export class HeartbeatService {
                 // Optionally log LTP specifically if needed, but Bid is the "Liquid" price.
             }
 
+            // GANN_9 / GANN_ANGLE: option premium stop — exit if bid falls to 60% of entry price (40% loss).
+            // Prevents all-day bleeding when underlying oscillates near SL without cleanly triggering it.
+            if (pos.strategyName === 'GANN_9' || pos.strategyName === 'GANN_ANGLE') {
+                if (pos.entryPrice > 0 && currentBid <= pos.entryPrice * 0.60) {
+                    const reason = `OPTION PREMIUM STOP: bid ₹${currentBid} <= 60% of entry ₹${pos.entryPrice} (loss ${(((pos.entryPrice - currentBid) / pos.entryPrice) * 100).toFixed(1)}%). Exiting.`;
+                    this.logger.warn(`🛑 [${pos.symbol}] ${reason}`);
+                    await this.paperTrading.closePosition(pos.token, currentBid, reason);
+                    continue;
+                }
+            }
+
             // EMA_5: consume touch-exit flag set by scanner on candle close
             if (pos.strategyName === 'EMA_5') {
                 const emaExitFlag = await this.cacheManager.get(`EMA5_EXIT:${pos.symbol}`);
