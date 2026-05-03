@@ -925,7 +925,8 @@ export class HeartbeatService {
     /** Fetch OHLC + RVOL of the most recently COMPLETED 5-min candle for a symbol.
      *  Shoonya returns candles newest-first: index[0] = forming, index[1] = last completed.
      *  daysLimit=2 ensures enough candles for a 10-period volume average.
-     *  rvol is null when fewer than 11 completed candles exist (insufficient history). */
+     *  rvol is null when fewer than 11 completed candles exist (insufficient history).
+     *  Volume field: Shoonya uses 'v' (not 'intv') — fallback included for resilience. */
     private async getLastCompletedCandle(symbol: string): Promise<{ close: number; high: number; low: number; range: number; volume: number; avgVolume: number; rvol: number | null } | null> {
         const token = this.nseService.getToken(symbol);
         if (!token) return null;
@@ -937,15 +938,20 @@ export class HeartbeatService {
             const close = parseFloat(c?.intc || '0');
             const high  = parseFloat(c?.inth || '0');
             const low   = parseFloat(c?.intl || '0');
-            const volume = parseFloat(c?.intv || '0');
+            // 'v' is the correct Shoonya volume field — 'intv' kept as fallback for resilience
+            const readVol = (candle: any): number => parseFloat(candle?.v || candle?.intv || '0');
+            const volume = readVol(c);
             if (close <= 0) return null;
+
+            // Log candle keys once per symbol to confirm field names in production
+            this.logger.debug(`[RVOL] ${symbol} candle keys: ${Object.keys(c).join(', ')}`);
 
             // Need at least 11 completed candles (index 1..11) for a 10-period average
             const completedCandles = candles.slice(1); // drop the forming candle
             let rvol: number | null = null;
             let avgVolume = 0;
             if (completedCandles.length >= 11) {
-                const last10Vols = completedCandles.slice(0, 10).map(x => parseFloat(x?.intv || '0'));
+                const last10Vols = completedCandles.slice(0, 10).map(readVol);
                 avgVolume = last10Vols.reduce((a, b) => a + b, 0) / last10Vols.length;
                 rvol = avgVolume > 0 ? volume / avgVolume : null;
             }
