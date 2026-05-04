@@ -739,10 +739,13 @@ export class HeartbeatService {
                     }
                 }
 
-                // Helper: place a mid-price limit sell for GANN_ANGLE/CANDLE_BREAKOUT, or close immediately
-                const triggerExit = async (reason: string) => {
+                // Helper: place a mid-price limit sell for GANN_ANGLE/CANDLE_BREAKOUT target exits,
+                // or close immediately for SL exits and all other strategies.
+                // forceImmediate=true bypasses the limit order queue — used for SL exits where
+                // waiting for a fill causes the position to bleed further against us.
+                const triggerExit = async (reason: string, forceImmediate = false) => {
                     const sellKey = `SELL:${pos.token}`;
-                    if (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT') {
+                    if (!forceImmediate && (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT')) {
                         if (this.pendingLimitOrders.has(sellKey)) return; // already pending
                         const midPrice = parseFloat(((currentBid + (optionInfo?.askPrice ?? currentBid)) / 2).toFixed(2));
                         this.pendingLimitOrders.set(sellKey, {
@@ -762,8 +765,8 @@ export class HeartbeatService {
                         await triggerExit(`Target Hit at ₹${ltp}`);
                     } else if (ltp < pos.slPrice) {
                         if (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT') {
-                            this.logger.warn(`🛑 SL HIT: [${pos.symbol}] ₹${ltp} < SL ₹${pos.slPrice}. Exiting immediately.`);
-                            await triggerExit(`SL Broken at ₹${ltp}`);
+                            this.logger.warn(`🛑 SL HIT: [${pos.symbol}] ₹${ltp} < SL ₹${pos.slPrice}. Closing at market bid ₹${currentBid}.`);
+                            await triggerExit(`SL Broken at ₹${ltp}`, true);
                         } else if (!pos.slTriggerTime) {
                             const now = Date.now();
                             this.paperTrading.updatePositionSLTrigger(pos.token, now);
@@ -792,8 +795,8 @@ export class HeartbeatService {
                         await triggerExit(`Target Hit at ₹${ltp}`);
                     } else if (ltp > pos.slPrice) {
                         if (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT') {
-                            this.logger.warn(`🛑 SL HIT: [${pos.symbol}] ₹${ltp} > SL ₹${pos.slPrice}. Exiting immediately.`);
-                            await triggerExit(`SL Broken at ₹${ltp}`);
+                            this.logger.warn(`🛑 SL HIT: [${pos.symbol}] ₹${ltp} > SL ₹${pos.slPrice}. Closing at market bid ₹${currentBid}.`);
+                            await triggerExit(`SL Broken at ₹${ltp}`, true);
                         } else if (!pos.slTriggerTime) {
                             const now = Date.now();
                             this.paperTrading.updatePositionSLTrigger(pos.token, now);
