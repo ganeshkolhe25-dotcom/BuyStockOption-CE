@@ -192,7 +192,7 @@ export class ScannerService implements OnModuleInit {
      * This refresh re-runs buildEma5Universe() and merges any new qualifying stocks
      * into EMA5_UNIVERSE without overwriting existing entries.
      */
-    @Cron('0 */10 9-14 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    @Cron('0 */15 9-14 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async refreshEma5Universe() {
         const now = new Date();
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
