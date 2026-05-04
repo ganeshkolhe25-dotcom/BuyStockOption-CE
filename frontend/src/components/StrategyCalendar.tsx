@@ -44,7 +44,7 @@ export default function StrategyCalendar({ history, strategyName, accentColor }:
     const d = new Date(r.exitTime).toLocaleDateString("en-IN", { timeZone: "Asia/Kolkata" }); // DD/MM/YYYY
     const [dd, mm, yyyy] = d.split("/");
     if (parseInt(yyyy) !== viewYear || parseInt(mm) - 1 !== viewMonth) continue;
-    const key = dd;
+    const key = dd.padStart(2, "0"); // normalize "4" → "04" for browsers that skip zero-padding
     dailyPnl[key]   = (dailyPnl[key]   || 0) + (r.realizedPnl || 0);
     dailyCount[key] = (dailyCount[key] || 0) + 1;
   }
