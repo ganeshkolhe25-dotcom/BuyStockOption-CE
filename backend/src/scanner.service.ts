@@ -185,6 +185,49 @@ export class ScannerService implements OnModuleInit {
     }
 
     /**
+     * 5 EMA Dynamic Universe Refresh — Runs every 10 minutes, 9:35 AM–2:30 PM IST (Mon-Fri).
+     *
+     * The 9:25 AM scan only captures stocks whose ADX/ATR/RSI qualifies at that moment.
+     * Stocks that become overstretched (RSI extreme) or rangebound later in the day are missed.
+     * This refresh re-runs buildEma5Universe() and merges any new qualifying stocks
+     * into EMA5_UNIVERSE without overwriting existing entries.
+     */
+    @Cron('0 */10 9-14 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    async refreshEma5Universe() {
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+        if (timeStr < '09:35:00' || timeStr > '14:30:00') return;
+
+        const config = await this.prisma.shoonyaConfig.findFirst();
+        if (config && !config.ema5Enabled) return;
+
+        const cachedStr = await this.cacheManager.get<string>('EMA5_UNIVERSE');
+        if (!cachedStr) return; // No initial scan yet — skip
+
+        const existing: string[] = JSON.parse(cachedStr);
+        const existingSet = new Set<string>(existing);
+
+        try {
+            const fresh = await this.nseService.buildEma5Universe();
+            const newSymbols = fresh.filter(sym => !existingSet.has(sym));
+
+            if (newSymbols.length === 0) {
+                this.logger.log(`[5 EMA Refresh] ${timeStr} — No new qualifying stocks. Universe unchanged (${existing.length} stocks).`);
+                return;
+            }
+
+            const merged = [...existing, ...newSymbols];
+            await this.cacheManager.set('EMA5_UNIVERSE', JSON.stringify(merged), 43200000);
+
+            this.nseService.subscribeForLiveFeed(newSymbols);
+
+            this.logger.log(`[5 EMA Refresh] ${timeStr} — +${newSymbols.length} new stocks added: [${newSymbols.join(', ')}] | Total universe: ${merged.length}`);
+        } catch (err: any) {
+            this.logger.error(`[5 EMA Refresh] Failed: ${err.message}`);
+        }
+    }
+
+    /**
      * Gann Angle Momentum Cache Builder — Runs every 5 minutes, 9:20–11:30 AM IST (Mon-Fri)
      *
      * Replaces the old "scan + add to watchlist immediately" approach.
