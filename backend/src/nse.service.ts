@@ -198,21 +198,16 @@ export class NseService implements OnModuleInit {
                 const prevClose = parseFloat(item.c) || ltp;
                 const openPrice = parseFloat(item.o) || ltp;
                 const pChange = ((ltp - prevClose) / prevClose) * 100;
-                // No price ceiling — custom universe includes MRF (~₹120k), Page Industries, etc.
-                if (ltp >= 100) {
-                    const symbol = item.tsym.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym;
-                    candidateSymbols.push(symbol);
-                    basicDataMap.set(symbol, { ltp, pChange, prevClose, openPrice });
-                }
+                const symbol = item.tsym.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym;
+                candidateSymbols.push(symbol);
+                basicDataMap.set(symbol, { ltp, pChange, prevClose, openPrice });
             }
         }
 
-        // Pre-filter: only stocks that moved >= 0.5% qualify for the Gann-9 universe
-        const movers = candidateSymbols.filter(sym => Math.abs(basicDataMap.get(sym).pChange) >= 0.5);
-        this.logger.log(`Found ${candidateSymbols.length} candidates in price range, ${movers.length} with pChange >= 0.5%. Fetching indicators...`);
+        this.logger.log(`Found ${candidateSymbols.length} candidates. Fetching indicators...`);
 
         const finalized: NSEStock[] = [];
-        for (const sym of movers) {
+        for (const sym of candidateSymbols) {
             const basic = basicDataMap.get(sym);
             const indicators = await this.fetchIndicatorsFromShoonya(sym);
 

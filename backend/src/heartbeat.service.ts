@@ -45,8 +45,6 @@ export class HeartbeatService {
     private dailyTradesCount = 0;
     private lastHeartbeatTime = new Date().toISOString();
     private pendingLimitOrders = new Map<string, PendingLimitOrder>();
-    // Symbols where option token resolution permanently failed today — skip on next attempt
-    private readonly fnoExcluded = new Set<string>();
     // 2-Candle: tokens where half-exit at 1:1 has already been done — remaining half is trailing
     private readonly cbHalfExited = new Set<string>();
 
@@ -82,12 +80,6 @@ export class HeartbeatService {
     async addToWatchlist(symbol: string, triggerPrice: number, type: 'CE' | 'PE', targetPrice: number, slPrice: number, strategyName: string = 'GANN_9') {
         // NOTE: Do NOT check trade limits here — watchlist is observation only.
         // The limit is enforced at order placement time in executeOptionTrade().
-
-        // Skip symbols where option token resolution failed earlier today
-        if (this.fnoExcluded.has(symbol)) {
-            this.logger.log(`BLOCKED [FNO Excluded]: [${symbol}] not F&O tradeable today — skipping.`);
-            return;
-        }
 
         // Skip if symbol already has an open position in the SAME strategy — no intra-strategy duplicates
         // Different strategies can trade the same symbol independently if their own criteria is met
@@ -187,22 +179,10 @@ export class HeartbeatService {
                 const isCandleBreakout = entry.strategyName === 'CANDLE_BREAKOUT';
                 const isGann9 = entry.strategyName === 'GANN_9';
 
-                // Sustain threshold: the price level LTP must be at/beyond to count as "still holding"
-                // GANN_9: 0.05% ABOVE trigger (CE) / BELOW trigger (PE) — small positive confirmation,
-                //         avoids tick-noise from a price that just barely kissed the level and bounced
-                // EMA_5: 0.3% below trigger (wide — mean-reversion pullbacks are normal after crossover)
-                // Other Gann: 0.05% below trigger (tight symmetric buffer)
-                let sustainThreshold: number;
-                if (isGann9) {
-                    sustainThreshold = entry.type === 'CE'
-                        ? entry.triggerPrice * 1.0005
-                        : entry.triggerPrice * 0.9995;
-                } else {
-                    const bufferPct = isEma ? 0.005 : 0.0005;
-                    sustainThreshold = entry.type === 'CE'
-                        ? entry.triggerPrice * (1 - bufferPct)
-                        : entry.triggerPrice * (1 + bufferPct);
-                }
+                const bufferPct = isEma ? 0.005 : 0.0005;
+                const sustainThreshold = entry.type === 'CE'
+                    ? entry.triggerPrice * (1 - bufferPct)
+                    : entry.triggerPrice * (1 + bufferPct);
 
                 const isSustaining = entry.type === 'CE'
                     ? ltp >= sustainThreshold
@@ -226,8 +206,7 @@ export class HeartbeatService {
                 const timeElapsedMs = Date.now() - entry.breakoutTime;
 
                 if (timeElapsedMs >= sustainMs) {
-                    // Final check at sustain mark — kill if not sustaining (applies to all strategies)
-                    if (!isSustaining) {
+                    if (!isSustaining && !isGann9) {
                         const invalidMsg = `Signal Invalidated at 5-min check: LTP ₹${ltp} not sustaining ${entry.type} threshold ₹${sustainThreshold.toFixed(2)} (trigger ₹${entry.triggerPrice}).`;
                         this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
                         this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
@@ -236,21 +215,9 @@ export class HeartbeatService {
                         continue;
                     }
 
-                    // GANN_9: verify the last completed 5-min candle actually CLOSED above/below the trigger
-                    // This is the candle-close confirmation — prevents acting on a wick touch that reversed
                     if (isGann9) {
                         const candle = await this.getLastCompletedCandle(entry.symbol);
                         if (candle !== null) {
-                            // Volatility filter: skip if candle range < 0.1% of trigger (sluggish/flat price action)
-                            if (candle.range < entry.triggerPrice * 0.001) {
-                                const msg = `5-min candle range ₹${candle.range.toFixed(2)} < 0.1% of trigger ₹${entry.triggerPrice.toFixed(2)}. Low volatility — ignored.`;
-                                this.logger.warn(`❌ [${entry.symbol}] ${msg}`);
-                                this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, msg, entry.strategyName);
-                                await this.cacheManager.del(key);
-                                updatedKeys = updatedKeys.filter(k => k !== key);
-                                continue;
-                            }
-                            // Candle close must be >= trigger×1.001 (CE) or <= trigger×0.999 (PE) — 0.1% buffer filters noise
                             const confirmedByCandle = entry.type === 'CE'
                                 ? candle.close >= entry.triggerPrice * 1.001
                                 : candle.close <= entry.triggerPrice * 0.999;
@@ -262,8 +229,6 @@ export class HeartbeatService {
                                 updatedKeys = updatedKeys.filter(k => k !== key);
                                 continue;
                             }
-                            // Candle strength check: ideal breakout has entire candle body clear of trigger
-                            // CE strong = candle low > trigger (no wick below), PE strong = candle high < trigger
                             const strongCandle = entry.type === 'CE'
                                 ? candle.low > entry.triggerPrice
                                 : candle.high < entry.triggerPrice;
@@ -278,28 +243,8 @@ export class HeartbeatService {
                             this.logger.log(
                                 `📊 [${entry.symbol}] CANDLE CONFIRM [${strongCandle ? 'STRONG ✅' : 'WEAK ⚠️'}]: ` +
                                 `close ₹${candle.close} | high ₹${candle.high} | low ₹${candle.low} | ` +
-                                `range ₹${candle.range.toFixed(2)} | trigger ₹${entry.triggerPrice.toFixed(2)} | ` +
-                                `sustain threshold ₹${sustainThreshold.toFixed(2)}`
+                                `trigger ₹${entry.triggerPrice.toFixed(2)} | sustain threshold ₹${sustainThreshold.toFixed(2)}`
                             );
-
-                            // ── RVOL Volume Check ─────────────────────────────────────────────
-                            if (candle.rvol === null) {
-                                this.logger.warn(`⚠️ [${entry.symbol}] Insufficient candles for RVOL — skipping volume check, proceeding.`);
-                            } else {
-                                const rvolStr = `Volume ${candle.volume.toFixed(0)} | Avg ${candle.avgVolume.toFixed(0)} | RVOL ${candle.rvol.toFixed(2)}`;
-                                if (candle.rvol < 1.0) {
-                                    const msg = `${rvolStr} | FAIL — Low Volume (< 1.0x)`;
-                                    this.logger.warn(`❌ [${entry.symbol}] VOLUME REJECT: ${msg}`);
-                                    this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, msg, entry.strategyName);
-                                    await this.cacheManager.del(key);
-                                    updatedKeys = updatedKeys.filter(k => k !== key);
-                                    continue;
-                                } else if (candle.rvol < 1.2) {
-                                    this.logger.warn(`⚠️ [${entry.symbol}] WEAK VOLUME: ${rvolStr} | WEAK (1.0–1.2x) — proceeding with caution.`);
-                                } else {
-                                    this.logger.log(`✅ [${entry.symbol}] VOLUME PASS: ${rvolStr} | PASS — Strong Volume (≥ 1.2x).`);
-                                }
-                            }
                         } else {
                             this.logger.warn(`[${entry.symbol}] Could not fetch 5-min candle — proceeding with tick confirmation.`);
                         }
@@ -344,8 +289,7 @@ export class HeartbeatService {
             const contract = await this.shoonyaService.findAtmOption(symbol, cmp, type, preferITM);
 
             if (!contract) {
-                this.fnoExcluded.add(symbol); // don't retry this symbol today
-                this.logger.warn(`[${symbol}] No F&O option found — excluded from today's trading.`);
+                this.logger.warn(`[${symbol}] No F&O option found — skipping this trade.`);
                 return;
             }
 
@@ -524,9 +468,8 @@ export class HeartbeatService {
         // Single batch LTP call — reads WS tick cache, falls back to one REST batch
         const ltpMap = await this.nseService.getBatchLTP(eligibleStocks.map((s: any) => s.symbol));
 
-        // Directional fresh-cross detectors — 1% window on the correct side only
-        const freshCE = (price: number, trigger: number) => price >= trigger && price <= trigger * 1.01;
-        const freshPE = (price: number, trigger: number) => price <= trigger && price >= trigger * 0.99;
+        const freshCE = (price: number, trigger: number) => price >= trigger;
+        const freshPE = (price: number, trigger: number) => price <= trigger;
 
         for (const stock of eligibleStocks) {
             const ltp = ltpMap[stock.symbol];
@@ -572,25 +515,14 @@ export class HeartbeatService {
 
             if (!tradeType || !trigger) continue;
 
-            // SL buffer: 0.2% below trigger for CE, 0.2% above trigger for PE
-            // Avoids exact-level SL which gets clipped by market noise
             const SL_BUFFER = 0.002;
             sl = tradeType === 'CE' ? trigger * (1 - SL_BUFFER) : trigger * (1 + SL_BUFFER);
-
-            // R:R guard — minimum 1:2 on the underlying before entering
-            const riskPts   = Math.abs(trigger - sl);
-            const rewardPts = Math.abs(target - trigger);
-            if (rewardPts < 2 * riskPts) {
-                this.logger.debug(`[${stock.symbol}] GANN_9 skipped: R:R ${(rewardPts / riskPts).toFixed(1)}:1 < 2:1`);
-                continue;
-            }
 
             // Skip if already in watchlist
             const existing = await this.cacheManager.get(`WATCHLIST:${stock.symbol}`);
             if (existing) continue;
 
-            // RDX filter: always enforced — block trade if no candle data (rdx undefined = no confirmation)
-            // RDX = RSI + (ADX − 20) / 5: CE needs rdx > 55 (bullish momentum), PE needs rdx < 45 (bearish)
+            // RDX filter: CE needs rdx > 50 (bullish), PE needs rdx < 50 (bearish)
             const rdx = stock.rdx ?? null;
             if (rdx === null) {
                 this.logger.debug(`[${stock.symbol}] GANN_9 blocked: no RDX data available`);
@@ -605,27 +537,17 @@ export class HeartbeatService {
                 continue;
             }
 
-            // Overextended move filter: if LTP already > 0.5% beyond trigger, breakout has run too far.
-            // Entering here means chasing — skip and wait for the next fresh cross.
             const ltpBeyondPct = tradeType === 'CE'
                 ? (ltp - trigger) / trigger
                 : (trigger - ltp) / trigger;
-            if (ltpBeyondPct > 0.01) {
-                this.logger.debug(
-                    `[${stock.symbol}] GANN_9 skipped (overextended): LTP ₹${ltp} is ` +
-                    `${(ltpBeyondPct * 100).toFixed(2)}% beyond trigger ₹${trigger.toFixed(2)} (max 1%)`
-                );
-                continue;
-            }
-
-            const riskPtsLog   = Math.abs(trigger - sl);
-            const rewardPtsLog = Math.abs(target - trigger);
+            const riskPts   = Math.abs(trigger - sl);
+            const rewardPts = Math.abs(target - trigger);
             this.logger.log(
                 `📋 GANN_9 PRE-ENTRY SIGNAL: [${stock.symbol}] ${tradeType} | ` +
                 `Trigger ₹${trigger.toFixed(2)} | LTP ₹${ltp} (dist ${(ltpBeyondPct * 100).toFixed(2)}%) | ` +
                 `SL ₹${sl.toFixed(2)} | Target ₹${target.toFixed(2)} | ` +
-                `Pre-Entry Risk ₹${riskPtsLog.toFixed(2)} | Pre-Entry Reward ₹${rewardPtsLog.toFixed(2)} | ` +
-                `Pre-Entry R:R 1:${(rewardPtsLog / riskPtsLog).toFixed(1)} | RDX ${rdx.toFixed(1)}`
+                `Risk ₹${riskPts.toFixed(2)} | Reward ₹${rewardPts.toFixed(2)} | ` +
+                `R:R 1:${(rewardPts / riskPts).toFixed(1)} | RDX ${rdx.toFixed(1)}`
             );
             await this.addToWatchlist(stock.symbol, trigger, tradeType, target, sl, 'GANN_9');
         }
@@ -1018,41 +940,18 @@ export class HeartbeatService {
         this.logger.log('[2-Candle] Half-exit tracker cleared for new day.');
     }
 
-    /** Fetch OHLC + RVOL of the most recently COMPLETED 5-min candle for a symbol.
-     *  Shoonya returns candles newest-first: index[0] = forming, index[1] = last completed.
-     *  daysLimit=2 ensures enough candles for a 10-period volume average.
-     *  rvol is null when fewer than 11 completed candles exist (insufficient history).
-     *  Volume field: Shoonya uses 'v' (not 'intv') — fallback included for resilience. */
-    private async getLastCompletedCandle(symbol: string): Promise<{ close: number; high: number; low: number; range: number; volume: number; avgVolume: number; rvol: number | null } | null> {
+    private async getLastCompletedCandle(symbol: string): Promise<{ close: number; high: number; low: number } | null> {
         const token = this.nseService.getToken(symbol);
         if (!token) return null;
         try {
             const candles = await this.shoonyaService.getTimePriceSeries('NSE', token, '5', 2);
             if (!candles || candles.length < 2) return null;
-            // index[0] = currently forming candle (skip), index[1..] = completed candles
             const c     = candles[1];
             const close = parseFloat(c?.intc || '0');
             const high  = parseFloat(c?.inth || '0');
             const low   = parseFloat(c?.intl || '0');
-            // 'v' is the correct Shoonya volume field — 'intv' kept as fallback for resilience
-            const readVol = (candle: any): number => parseFloat(candle?.v || candle?.intv || '0');
-            const volume = readVol(c);
             if (close <= 0) return null;
-
-            // Log candle keys once per symbol to confirm field names in production
-            this.logger.debug(`[RVOL] ${symbol} candle keys: ${Object.keys(c).join(', ')}`);
-
-            // Need at least 11 completed candles (index 1..11) for a 10-period average
-            const completedCandles = candles.slice(1); // drop the forming candle
-            let rvol: number | null = null;
-            let avgVolume = 0;
-            if (completedCandles.length >= 11) {
-                const last10Vols = completedCandles.slice(0, 10).map(readVol);
-                avgVolume = last10Vols.reduce((a, b) => a + b, 0) / last10Vols.length;
-                rvol = avgVolume > 0 ? volume / avgVolume : null;
-            }
-
-            return { close, high, low, range: high - low, volume, avgVolume, rvol };
+            return { close, high, low };
         } catch (err: any) {
             this.logger.warn(`[${symbol}] 5-min candle fetch failed: ${err.message}`);
             return null;
