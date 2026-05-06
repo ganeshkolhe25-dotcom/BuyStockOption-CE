@@ -348,40 +348,31 @@ export class NseService implements OnModuleInit {
      * Called once at 9:20 AM; result cached as EMA5_UNIVERSE for the rest of the day.
      */
     async buildEma5Universe(): Promise<string[]> {
-        this.logger.log('[5 EMA] Building morning universe from Custom Trading Universe (ADX filter)...');
+        this.logger.log('[5 EMA] Building morning universe from Custom Trading Universe (all 33 stocks — ADX/ATR/RSI filters disabled)...');
 
         const tokens = CUSTOM_TRADING_UNIVERSE.map(sym => this.tokenMap.get(sym)).filter(Boolean) as string[];
         const quotes = await this.shoonya.getMultiQuotes('NSE', tokens);
 
         // All custom universe stocks are user-chosen — skip price ceiling (MRF ~₹120k, etc.)
-        const priceFiltered: string[] = [];
+        const universe: string[] = [];
         for (const item of quotes) {
             if (!item.lp || !item.tsym) continue;
             const ltp = parseFloat(item.lp);
             if (ltp >= 100) {
                 const sym = item.tsym.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym;
-                priceFiltered.push(sym);
+                universe.push(sym);
             }
         }
 
-        this.logger.log(`[5 EMA] ${priceFiltered.length}/${CUSTOM_TRADING_UNIVERSE.length} pass price filter. Fetching indicators...`);
+        // ADX/ATR/RSI pre-filters commented out — signal detection (alert+activation candle vs EMA)
+        // is the real filter. Pre-filtering by daily RSI extreme caused 0 stocks on normal market days.
+        // const indicators = await this.fetchIndicatorsFromShoonya(sym);
+        // const isRangebound    = indicators.adx < 30;
+        // const hasRange        = indicators.atrPct > 1.5;
+        // const isOverstretched = indicators.rsi > 70 || indicators.rsi < 30;
+        // if (isRangebound && hasRange && isOverstretched) universe.push(sym);
 
-        const universe: string[] = [];
-        for (const sym of priceFiltered) {
-            const indicators = await this.fetchIndicatorsFromShoonya(sym);
-            if (indicators) {
-                const isRangebound  = indicators.adx < 30;
-                const hasRange      = indicators.atrPct > 1.5;
-                const isOverstretched = indicators.rsi > 70 || indicators.rsi < 30;
-                if (isRangebound && hasRange && isOverstretched) {
-                    universe.push(sym);
-                    this.logger.debug(`[5 EMA] ${sym} ✅ ADX=${indicators.adx} ATR%=${indicators.atrPct.toFixed(2)} RSI=${indicators.rsi}`);
-                }
-            }
-            await new Promise(res => setTimeout(res, 150));
-        }
-
-        this.logger.log(`[5 EMA] Universe ready: ${universe.length} mean-reversion stocks (ADX<30, ATR%>1.5%, RSI extreme) from Custom Universe.`);
+        this.logger.log(`[5 EMA] Universe ready: ${universe.length}/${CUSTOM_TRADING_UNIVERSE.length} stocks (no ADX/ATR/RSI pre-filter).`);
         return universe;
     }
 

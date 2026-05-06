@@ -457,12 +457,9 @@ export class ScannerService implements OnModuleInit {
         const now = new Date();
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
 
-        const inMorningWindow   = timeStr >= '09:30:00' && timeStr <= '11:30:00';
-        const inAfternoonWindow = timeStr >= '13:30:00' && timeStr <= '15:15:00';
-        if (!inMorningWindow && !inAfternoonWindow) {
-            this.logger.debug(`5 EMA CE: Outside active windows (${timeStr}). Skipping.`);
-            return;
-        }
+        // Time window restriction removed — CE scan now runs full session like PE scan (9:15–3:15 PM).
+        // Previous morning/afternoon windows (9:30–11:30, 13:30–15:15) were blocking valid setups.
+        if (timeStr < '09:15:00' || timeStr > '15:15:00') return;
 
         this.logger.log(`⏰ ${timeStr} 5 EMA CE Scan (15-min) Triggered!`);
 
