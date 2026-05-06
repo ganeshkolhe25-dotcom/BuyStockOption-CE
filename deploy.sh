@@ -23,7 +23,14 @@ deploy_backend() {
     "${BE_SRC}/scanner.service.ts" \
     "${BE_SRC}/nse.service.ts" \
     "${BE_SRC}/ema5.service.ts" \
+    "${BE_SRC}/shoonya.service.ts" \
+    "${BE_SRC}/paper.service.ts" \
     "${BE_SRC}/app.controller.ts" \
+    "${BE_SRC}/app.module.ts" \
+    "${BE_SRC}/candle-breakout.service.ts" \
+    "${BE_SRC}/gann-angle.service.ts" \
+    "${BE_SRC}/gann.service.ts" \
+    "${BE_SRC}/prisma.service.ts" \
     "${VM}:/home/maddy/BuyStockOption_CE/backend/src/" \
     --zone "$ZONE" --project "$PROJECT"
   echo "[BE] Building Docker image on VM..."
