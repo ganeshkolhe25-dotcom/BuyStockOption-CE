@@ -62,6 +62,10 @@ export class ShoonyaService implements OnModuleInit {
         timestamp: number;
     }>();
     private readonly subscribedOptionTokens = new Set<string>(); // NFO token strings
+    // Tracks when each option token was last subscribed to enforce the 1s throttle
+    private readonly optionTokenLastSubscribed = new Map<string, number>();
+    // Callback registered by HeartbeatService for instant WS-driven exit evaluation
+    private optionTickCallback: ((token: string, tick: { ltp: number; bidPrice: number; askPrice: number; timestamp: number }) => void) | null = null;
 
     constructor(private readonly prisma: PrismaService) {}
 
@@ -932,6 +936,10 @@ export class ShoonyaService implements OnModuleInit {
                             };
                             if (updated.ltp > 0 || updated.bidPrice > 0) {
                                 this.optionTickCache.set(msg.tk, updated);
+                                // Notify HeartbeatService for instant exit evaluation (non-blocking)
+                                if (this.optionTickCallback) {
+                                    this.optionTickCallback(msg.tk, updated);
+                                }
                             }
                         } else if (msg.lp) {
                             // NSE/BSE stock tick — existing behaviour unchanged
@@ -983,13 +991,27 @@ export class ShoonyaService implements OnModuleInit {
     }
 
     /**
+     * Register a callback invoked synchronously on every NFO option tick.
+     * HeartbeatService uses this for instant WS-driven exit evaluation.
+     * Only one callback is supported — subsequent calls overwrite the previous.
+     */
+    registerOptionTickHandler(cb: (token: string, tick: { ltp: number; bidPrice: number; askPrice: number; timestamp: number }) => void): void {
+        this.optionTickCallback = cb;
+    }
+
+    /**
      * Subscribe an NFO option token to the live WS feed so bid/ask ticks are
      * received in real-time. Safe to call multiple times — duplicate calls are ignored.
      * Tokens queued while WS is down are automatically re-subscribed on reconnect.
+     * Includes a 1-second throttle to prevent rapid-fire re-subscription attempts.
      */
     subscribeOptionToken(token: string): void {
         if (!token || token.includes('Dummy') || isNaN(Number(token))) return;
-        if (this.subscribedOptionTokens.has(token)) return; // no duplicate subscription
+        if (this.subscribedOptionTokens.has(token)) return; // already subscribed
+        // 1-second throttle: ignore if same token was just subscribed within the last second
+        const lastSub = this.optionTokenLastSubscribed.get(token) ?? 0;
+        if (Date.now() - lastSub < 1000) return;
+        this.optionTokenLastSubscribed.set(token, Date.now());
         this.subscribedOptionTokens.add(token);
         if (this.ws?.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify({ t: 't', k: `NFO|${token}` }));
@@ -1032,6 +1054,7 @@ export class ShoonyaService implements OnModuleInit {
         this.subscribedKeys.clear();
         this.optionTickCache.clear();
         this.subscribedOptionTokens.clear();
+        this.optionTokenLastSubscribed.clear();
         this.logger.log('[WS] Tick feed disconnected and cache cleared (stocks + options).');
     }
 

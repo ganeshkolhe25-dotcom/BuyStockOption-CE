@@ -4,7 +4,7 @@ import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
 import { NseService } from './nse.service';
 import { ShoonyaService } from './shoonya.service';
-import { PaperTradingService } from './paper.service';
+import { PaperTradingService, PaperPosition } from './paper.service';
 
 
 export interface WatchlistEntry {
@@ -37,9 +37,10 @@ export class HeartbeatService {
     private readonly logger = new Logger(HeartbeatService.name);
     // Use NestJS built-in memory cache to replace external Redis for local evaluation
 
-    // WS tick is considered fresh if received within this window.
-    // 30s matches the WS heartbeat ping interval — if no tick arrives in 30s the feed is likely dead.
-    private readonly TICK_STALENESS_MS = 30_000;
+    // WS tick freshness window. 5s gives real-time prices while tolerating brief WS gaps.
+    private readonly TICK_STALENESS_MS = 5_000;
+    // Tokens currently being closed — prevents duplicate exits from concurrent WS + cron paths.
+    private readonly closingTokens = new Set<string>();
 
     private dailyTradesCount = 0;
     private lastHeartbeatTime = new Date().toISOString();
@@ -56,6 +57,15 @@ export class HeartbeatService {
         private readonly paperTrading: PaperTradingService
     ) {
         this.logger.log('Sustain Engine Initialized. Heartbeat Worker waiting...');
+        // Register WS-driven exit callback. Fires on every NFO tick; we schedule the
+        // async evaluation off the WS event loop via setImmediate to stay non-blocking.
+        this.shoonyaService.registerOptionTickHandler((token, tick) => {
+            setImmediate(() =>
+                this.handleInstantOptionTick(token, tick).catch(e =>
+                    this.logger.error(`[WS-EXIT] Tick handler error for ${token}: ${e.message}`)
+                )
+            );
+        });
     }
 
     getEngineStats() {
@@ -621,10 +631,239 @@ export class HeartbeatService {
         }
     }
 
+    // ─── Shared exit helpers ────────────────────────────────────────────────────
+
+    /** Bid protection: never use a bid that is more than 2% below LTP (abnormal spread). */
+    private computeEffectivePrice(bidPrice: number, ltp: number): number {
+        return bidPrice > 0 ? Math.max(bidPrice, ltp * 0.98) : ltp;
+    }
+
+    /**
+     * Called on every NFO option tick from the WS handler (via setImmediate).
+     * Performs an instant exit check for the matching active position.
+     * Fast path: O(1) position lookup, no REST calls for the option price.
+     */
+    private async handleInstantOptionTick(
+        token: string,
+        tick: { ltp: number; bidPrice: number; askPrice: number; timestamp: number }
+    ): Promise<void> {
+        if (!this.isMarketHours()) return;
+
+        const pos = this.paperTrading.getActivePositionByToken(token);
+        if (!pos) return;
+
+        if (this.closingTokens.has(token)) {
+            this.logger.debug(`[SKIP] Position already closing: ${token}`);
+            return;
+        }
+
+        const effectivePrice = this.computeEffectivePrice(tick.bidPrice, tick.ltp);
+        const optionInfo = {
+            ltp: tick.ltp,
+            bidPrice: tick.bidPrice,
+            askPrice: tick.askPrice > 0 ? tick.askPrice : tick.ltp,
+        };
+        this.paperTrading.updatePositionLTP(token, effectivePrice);
+        await this.evaluateExitForPosition(pos, effectivePrice, optionInfo, 'WS');
+    }
+
+    /**
+     * Core exit-evaluation logic shared by the WS-driven path and the 1s cron.
+     * All SL/target/premium-stop decisions are made here — no duplicate code.
+     *
+     * source = 'WS'   → triggered by a live option tick (sub-second latency)
+     * source = 'CRON' → triggered by the 1-second safety-net cron
+     */
+    private async evaluateExitForPosition(
+        pos: PaperPosition,
+        currentBid: number,
+        optionInfo: { ltp: number; askPrice: number; bidPrice: number } | null,
+        source: 'WS' | 'CRON'
+    ): Promise<void> {
+        const exitPrefix = source === 'WS' ? '[WS-EXIT]' : '[CRON-EXIT]';
+
+        // Inner helper — places a limit sell for GANN_ANGLE/CANDLE_BREAKOUT target exits,
+        // closes immediately for SL exits and all other strategies.
+        // forceImmediate=true bypasses the limit queue (used for hard SL hits).
+        const triggerExit = async (reason: string, forceImmediate = false): Promise<void> => {
+            if (this.closingTokens.has(pos.token)) {
+                this.logger.debug(`[SKIP] Position already closing: ${pos.token}`);
+                return;
+            }
+            const sellKey = `SELL:${pos.token}`;
+            if (!forceImmediate && (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT')) {
+                if (this.pendingLimitOrders.has(sellKey)) return; // already pending
+                this.closingTokens.add(pos.token);
+                const midPrice = parseFloat(((currentBid + (optionInfo?.askPrice ?? currentBid)) / 2).toFixed(2));
+                this.pendingLimitOrders.set(sellKey, {
+                    symbol: pos.symbol, token: pos.token, tradingSymbol: pos.tradingSymbol ?? '',
+                    type: pos.type, qty: pos.qty, midPrice, orderType: 'SELL',
+                    placedAt: Date.now(), strategyName: pos.strategyName, exitReason: reason,
+                });
+                this.logger.log(`📋 GANN_ANGLE LIMIT SELL: [${pos.symbol}] at mid ₹${midPrice}. Reason: ${reason}`);
+            } else {
+                this.closingTokens.add(pos.token);
+                this.logger.warn(`${exitPrefix} Immediate exit triggered for token: ${pos.token} — ${reason}`);
+                await this.paperTrading.closePosition(pos.token, currentBid, reason);
+            }
+        };
+
+        // ── Option premium stop (GANN_9 / GANN_ANGLE) ──────────────────────────
+        // Exit if bid falls to 60% of entry — stops all-day bleeding near SL.
+        if (pos.strategyName === 'GANN_9' || pos.strategyName === 'GANN_ANGLE') {
+            if (pos.entryPrice > 0 && currentBid <= pos.entryPrice * 0.60) {
+                if (this.closingTokens.has(pos.token)) { this.logger.debug(`[SKIP] Position already closing: ${pos.token}`); return; }
+                this.closingTokens.add(pos.token);
+                const reason = `OPTION PREMIUM STOP: bid ₹${currentBid} <= 60% of entry ₹${pos.entryPrice} (loss ${(((pos.entryPrice - currentBid) / pos.entryPrice) * 100).toFixed(1)}%). Exiting.`;
+                this.logger.warn(`🛑 [${pos.symbol}] ${reason}`);
+                this.logger.warn(`${exitPrefix} Immediate exit triggered for token: ${pos.token} — ${reason}`);
+                await this.paperTrading.closePosition(pos.token, currentBid, reason);
+                return;
+            }
+        }
+
+        // ── EMA_5: consume touch-exit flag set by scanner on candle close ───────
+        if (pos.strategyName === 'EMA_5') {
+            const emaExitFlag = await this.cacheManager.get(`EMA5_EXIT:${pos.symbol}`);
+            if (emaExitFlag) {
+                if (this.closingTokens.has(pos.token)) { this.logger.debug(`[SKIP] Position already closing: ${pos.token}`); return; }
+                this.closingTokens.add(pos.token);
+                await this.cacheManager.del(`EMA5_EXIT:${pos.symbol}`);
+                const reason = 'EMA Touch Exit: Candle closed past 5 EMA';
+                this.logger.warn(`📉 EMA TOUCH EXIT: [${pos.symbol}] Closing at Bid ₹${currentBid}`);
+                this.logger.warn(`${exitPrefix} Immediate exit triggered for token: ${pos.token} — ${reason}`);
+                await this.paperTrading.closePosition(pos.token, currentBid, reason);
+                return;
+            }
+        }
+
+        // ── Underlying SL / Target check ─────────────────────────────────────────
+        if (pos.targetPrice && pos.slPrice) {
+            // getBatchLTP reads from WS tick cache first (O(1) for subscribed stocks),
+            // REST fallback only on cache miss — safe for both WS and CRON callers.
+            const ltpMap = await this.nseService.getBatchLTP([pos.symbol]);
+            const ltp = ltpMap[pos.symbol] ?? null;
+            if (!ltp) return;
+
+            this.paperTrading.updateStockLTP(pos.token, ltp);
+
+            // EMA_5: trail SL to breakeven once 1:2 RR is reached on the underlying
+            if (pos.strategyName === 'EMA_5') {
+                const totalRange = Math.abs(pos.targetPrice - pos.slPrice);
+                const emaRisk    = totalRange / 4;
+                const stockEntry = pos.type === 'CE' ? pos.slPrice + emaRisk : pos.slPrice - emaRisk;
+                const twoRLevel  = pos.type === 'CE' ? stockEntry + 2 * emaRisk : stockEntry - 2 * emaRisk;
+                const alreadyTrailed = pos.type === 'CE' ? pos.slPrice >= stockEntry - 1 : pos.slPrice <= stockEntry + 1;
+                if (!alreadyTrailed) {
+                    const reachedTwoR = pos.type === 'CE' ? ltp >= twoRLevel : ltp <= twoRLevel;
+                    if (reachedTwoR) {
+                        const be = parseFloat(stockEntry.toFixed(2));
+                        this.logger.log(`🔒 TRAILING SL: [${pos.symbol}] 1:2 RR reached. SL moved → Breakeven ₹${be}`);
+                        this.paperTrading.updatePositionSL(pos.token, be);
+                    }
+                }
+            }
+
+            // CANDLE_BREAKOUT: phase 1 → half-exit at 1:1, phase 2 → trail by 0.125%
+            if (pos.strategyName === 'CANDLE_BREAKOUT') {
+                const phase1Price = parseFloat(((2 * pos.targetPrice! + pos.slPrice!) / 3).toFixed(2));
+                if (!this.cbHalfExited.has(pos.token)) {
+                    const phase1Hit = pos.type === 'CE' ? ltp >= phase1Price : ltp <= phase1Price;
+                    if (phase1Hit) {
+                        const halfQty = Math.floor(pos.qty / 2);
+                        if (halfQty > 0) {
+                            await this.paperTrading.partialClosePosition(pos.token, halfQty, currentBid, '1:1 R:R reached');
+                            const breakevenUnderlying = parseFloat(((2 * pos.slPrice! + pos.targetPrice!) / 3).toFixed(2));
+                            this.paperTrading.updatePositionSL(pos.token, breakevenUnderlying);
+                            this.cbHalfExited.add(pos.token);
+                            this.logger.log(
+                                `✂️  2-CANDLE HALF EXIT: [${pos.symbol}] ${pos.type} 1:1 hit @ underlying ₹${ltp}. ` +
+                                `Closed ${halfQty} lots @ option ₹${currentBid.toFixed(2)}. ` +
+                                `SL → breakeven ₹${breakevenUnderlying}. Trailing ${pos.qty - halfQty} lots.`
+                            );
+                        }
+                    }
+                } else {
+                    const trailPts    = parseFloat((ltp * 0.00125).toFixed(2));
+                    const newTrailSL  = pos.type === 'CE'
+                        ? parseFloat((ltp - trailPts).toFixed(2))
+                        : parseFloat((ltp + trailPts).toFixed(2));
+                    const shouldUpdate = pos.type === 'CE' ? newTrailSL > pos.slPrice! : newTrailSL < pos.slPrice!;
+                    if (shouldUpdate) {
+                        this.logger.log(`📈 2-CANDLE TRAIL: [${pos.symbol}] ${pos.type} SL ₹${pos.slPrice} → ₹${newTrailSL} (underlying ₹${ltp})`);
+                        this.paperTrading.updatePositionSL(pos.token, newTrailSL);
+                    }
+                }
+            }
+
+            if (pos.type === 'CE') {
+                if (ltp >= pos.targetPrice) {
+                    this.logger.warn(`🎯 TARGET HIT: [${pos.symbol}] Underlying reached ₹${ltp} >= Target ₹${pos.targetPrice}`);
+                    await triggerExit(`Target Hit at ₹${ltp}`);
+                } else if (ltp < pos.slPrice) {
+                    if (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT') {
+                        this.logger.warn(`🛑 SL HIT: [${pos.symbol}] ₹${ltp} < SL ₹${pos.slPrice}. Closing at market bid ₹${currentBid}.`);
+                        await triggerExit(`SL Broken at ₹${ltp}`, true);
+                    } else if (!pos.slTriggerTime) {
+                        this.paperTrading.updatePositionSLTrigger(pos.token, Date.now());
+                        this.logger.debug(`⚠️ SL BREACH DETECTED: [${pos.symbol}] dropped to ₹${ltp} < SL ₹${pos.slPrice}. Starting SL timer.`);
+                    } else {
+                        const elapsed = Date.now() - pos.slTriggerTime;
+                        const slSustainMs = pos.strategyName === 'EMA_5' ? 60_000 : pos.strategyName === 'GANN_9' ? 3 * 60_000 : 5 * 60_000;
+                        const slLabel     = pos.strategyName === 'EMA_5' ? '1m'   : pos.strategyName === 'GANN_9' ? '3m'       : '5m';
+                        if (elapsed >= slSustainMs) {
+                            this.logger.warn(`🛑 STOP-LOSS HIT: [${pos.symbol}] Sustained below SL ₹${pos.slPrice} for ${slLabel}.`);
+                            await triggerExit(`SL Hit at ₹${ltp} (${slLabel} Sustain)`);
+                        } else {
+                            this.logger.debug(`[${pos.symbol}] SL Breach. Wait ${Math.ceil((slSustainMs - elapsed) / 1000)}s more.`);
+                        }
+                    }
+                } else {
+                    if (pos.slTriggerTime) {
+                        this.logger.log(`✅ SL RECOVERY: [${pos.symbol}] recovered to ₹${ltp} >= SL ₹${pos.slPrice}. Cancelling SL timer.`);
+                        this.paperTrading.updatePositionSLTrigger(pos.token, undefined);
+                    }
+                }
+            } else { // PE
+                if (ltp <= pos.targetPrice) {
+                    this.logger.warn(`🎯 TARGET HIT: [${pos.symbol}] Underlying reached ₹${ltp} <= Target ₹${pos.targetPrice}`);
+                    await triggerExit(`Target Hit at ₹${ltp}`);
+                } else if (ltp > pos.slPrice) {
+                    if (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT') {
+                        this.logger.warn(`🛑 SL HIT: [${pos.symbol}] ₹${ltp} > SL ₹${pos.slPrice}. Closing at market bid ₹${currentBid}.`);
+                        await triggerExit(`SL Broken at ₹${ltp}`, true);
+                    } else if (!pos.slTriggerTime) {
+                        this.paperTrading.updatePositionSLTrigger(pos.token, Date.now());
+                        this.logger.debug(`⚠️ SL BREACH DETECTED: [${pos.symbol}] rose to ₹${ltp} > SL ₹${pos.slPrice}. Starting SL timer.`);
+                    } else {
+                        const elapsed = Date.now() - pos.slTriggerTime;
+                        const slSustainMs = pos.strategyName === 'EMA_5' ? 60_000 : pos.strategyName === 'GANN_9' ? 3 * 60_000 : 5 * 60_000;
+                        const slLabel     = pos.strategyName === 'EMA_5' ? '1m'   : pos.strategyName === 'GANN_9' ? '3m'       : '5m';
+                        if (elapsed >= slSustainMs) {
+                            this.logger.warn(`🛑 STOP-LOSS HIT: [${pos.symbol}] Sustained above SL ₹${pos.slPrice} for ${slLabel}.`);
+                            await triggerExit(`SL Hit at ₹${ltp} (${slLabel} Sustain)`);
+                        } else {
+                            this.logger.debug(`[${pos.symbol}] SL Breach. Wait ${Math.ceil((slSustainMs - elapsed) / 1000)}s more.`);
+                        }
+                    }
+                } else {
+                    if (pos.slTriggerTime) {
+                        this.logger.log(`✅ SL RECOVERY: [${pos.symbol}] recovered to ₹${ltp} <= SL ₹${pos.slPrice}. Cancelling SL timer.`);
+                        this.paperTrading.updatePositionSLTrigger(pos.token, undefined);
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── 1-second safety-net cron ───────────────────────────────────────────────
+
     /**
      * Enforce underlying dynamic target and stop loss exits.
+     * Runs every 1 second as a safety net alongside the WS-driven instant exits.
+     * Uses WS tick for option price (5s freshness window) with REST fallback.
      */
-    @Cron('*/15 * * * * *')
+    @Cron('*/1 * * * * *')
     async enforceDynamicExits() {
         if (!this.isMarketHours()) return;
         // NOTE: Never gate dynamic exits on trade limits — closing open positions must always run.
@@ -634,211 +873,35 @@ export class HeartbeatService {
         if (positions.length === 0) return;
 
         for (const pos of positions) {
+            if (this.closingTokens.has(pos.token)) {
+                this.logger.debug(`[SKIP] Position already closing: ${pos.token}`);
+                continue;
+            }
 
-            // 1. Fetch Option Premium Quote — prefer live WS tick, fall back to REST if stale/absent.
+            // Fetch option price — WS tick first, REST if stale / absent
             const tick = this.shoonyaService.getOptionTickPrice(pos.token);
             let currentBid = pos.currentLtp;
             let optionInfo: { ltp: number; askPrice: number; bidPrice: number } | null = null;
 
             if (tick && (Date.now() - tick.timestamp) < this.TICK_STALENESS_MS) {
-                // Fresh WS tick — use real-time bid price (zero REST calls)
-                currentBid = tick.bidPrice > 0 ? tick.bidPrice : tick.ltp;
+                currentBid = this.computeEffectivePrice(tick.bidPrice, tick.ltp);
                 optionInfo = { ltp: tick.ltp, bidPrice: tick.bidPrice, askPrice: tick.askPrice > 0 ? tick.askPrice : tick.ltp };
                 this.paperTrading.updatePositionLTP(pos.token, currentBid);
                 this.logger.debug(`[WS] Using tickCache price for token: ${pos.token} (bid ₹${currentBid})`);
             } else {
-                // REST fallback — WS tick absent or stale
                 optionInfo = await this.shoonyaService.getOptionQuote(pos.token);
                 if (tick) {
-                    this.logger.debug(`[REST] Fallback price used for token: ${pos.token} (WS tick stale: ${Date.now() - tick.timestamp}ms old)`);
+                    this.logger.debug(`[STALE] Using REST fallback for token: ${pos.token} (tick ${Date.now() - tick.timestamp}ms old)`);
                 } else {
                     this.logger.debug(`[REST] Fallback price used for token: ${pos.token} (no WS tick received yet)`);
                 }
                 if (optionInfo) {
-                    currentBid = optionInfo.bidPrice > 0 ? optionInfo.bidPrice : optionInfo.ltp;
-                    // CRITICAL: We update the system with the REALIZABLE price (Bid) for all PnL and logic checks
+                    currentBid = this.computeEffectivePrice(optionInfo.bidPrice, optionInfo.ltp);
                     this.paperTrading.updatePositionLTP(pos.token, currentBid);
                 }
             }
 
-            // GANN_9 / GANN_ANGLE: option premium stop — exit if bid falls to 60% of entry price (40% loss).
-            // Prevents all-day bleeding when underlying oscillates near SL without cleanly triggering it.
-            if (pos.strategyName === 'GANN_9' || pos.strategyName === 'GANN_ANGLE') {
-                if (pos.entryPrice > 0 && currentBid <= pos.entryPrice * 0.60) {
-                    const reason = `OPTION PREMIUM STOP: bid ₹${currentBid} <= 60% of entry ₹${pos.entryPrice} (loss ${(((pos.entryPrice - currentBid) / pos.entryPrice) * 100).toFixed(1)}%). Exiting.`;
-                    this.logger.warn(`🛑 [${pos.symbol}] ${reason}`);
-                    await this.paperTrading.closePosition(pos.token, currentBid, reason);
-                    continue;
-                }
-            }
-
-            // EMA_5: consume touch-exit flag set by scanner on candle close
-            if (pos.strategyName === 'EMA_5') {
-                const emaExitFlag = await this.cacheManager.get(`EMA5_EXIT:${pos.symbol}`);
-                if (emaExitFlag) {
-                    await this.cacheManager.del(`EMA5_EXIT:${pos.symbol}`);
-                    this.logger.warn(`📉 EMA TOUCH EXIT: [${pos.symbol}] Closing at Bid ₹${currentBid}`);
-                    await this.paperTrading.closePosition(pos.token, currentBid, 'EMA Touch Exit: Candle closed past 5 EMA');
-                    continue;
-                }
-            }
-
-            if (pos.targetPrice && pos.slPrice) {
-                const ltp = await this.nseService.getLiveLTP(pos.symbol);
-                if (!ltp) continue;
-
-                // 2. Fetch the Underlying Stock LTP for exact status display
-                this.paperTrading.updateStockLTP(pos.token, ltp);
-
-                // EMA_5: trail SL to breakeven once 1:2 RR is reached on the underlying
-                if (pos.strategyName === 'EMA_5') {
-                    // target - sl spans 4× risk (entry ± 3R with sl on the other side of entry ∓ 1R)
-                    const totalRange = Math.abs(pos.targetPrice - pos.slPrice);
-                    const emaRisk    = totalRange / 4;
-                    // Reconstruct stock entry from SL + risk
-                    const stockEntry = pos.type === 'CE' ? pos.slPrice + emaRisk : pos.slPrice - emaRisk;
-                    const twoRLevel  = pos.type === 'CE' ? stockEntry + 2 * emaRisk : stockEntry - 2 * emaRisk;
-                    // Only trail once (check if SL is still at its original side of entry)
-                    const alreadyTrailed = pos.type === 'CE' ? pos.slPrice >= stockEntry - 1 : pos.slPrice <= stockEntry + 1;
-
-                    if (!alreadyTrailed) {
-                        const reachedTwoR = pos.type === 'CE' ? ltp >= twoRLevel : ltp <= twoRLevel;
-                        if (reachedTwoR) {
-                            const be = parseFloat(stockEntry.toFixed(2));
-                            this.logger.log(`🔒 TRAILING SL: [${pos.symbol}] 1:2 RR reached. SL moved → Breakeven ₹${be}`);
-                            this.paperTrading.updatePositionSL(pos.token, be);
-                        }
-                    }
-                }
-
-                // CANDLE_BREAKOUT: phase 1 → half-exit at 1:1, move SL to breakeven
-                //                  phase 2 → trail remaining half by 0.125% of underlying
-                if (pos.strategyName === 'CANDLE_BREAKOUT') {
-                    // Reconstruct 1:1 (phase1) level from stored 2:1 target + SL
-                    // Derivation: entry = (target2R + 2*sl) / 3, phase1 = entry + (entry - sl) for CE
-                    // Simplified: phase1 = (2 * target2R + sl) / 3
-                    const phase1Price = parseFloat(((2 * pos.targetPrice! + pos.slPrice!) / 3).toFixed(2));
-
-                    if (!this.cbHalfExited.has(pos.token)) {
-                        const phase1Hit = pos.type === 'CE' ? ltp >= phase1Price : ltp <= phase1Price;
-                        if (phase1Hit) {
-                            const halfQty = Math.floor(pos.qty / 2);
-                            if (halfQty > 0) {
-                                // Exit half at current option bid
-                                await this.paperTrading.partialClosePosition(pos.token, halfQty, currentBid, '1:1 R:R reached');
-                                // Move SL to breakeven: entry = (2*sl + target2R) / 3
-                                const breakevenUnderlying = parseFloat(((2 * pos.slPrice! + pos.targetPrice!) / 3).toFixed(2));
-                                this.paperTrading.updatePositionSL(pos.token, breakevenUnderlying);
-                                this.cbHalfExited.add(pos.token);
-                                this.logger.log(
-                                    `✂️  2-CANDLE HALF EXIT: [${pos.symbol}] ${pos.type} 1:1 hit @ underlying ₹${ltp}. ` +
-                                    `Closed ${halfQty} lots @ option ₹${currentBid.toFixed(2)}. ` +
-                                    `SL → breakeven ₹${breakevenUnderlying}. Trailing ${pos.qty - halfQty} lots.`
-                                );
-                            }
-                        }
-                    } else {
-                        // Trail remaining half — SL moves 0.125% of underlying behind current price
-                        const trailPts = parseFloat((ltp * 0.00125).toFixed(2));
-                        const newTrailSL = pos.type === 'CE'
-                            ? parseFloat((ltp - trailPts).toFixed(2))
-                            : parseFloat((ltp + trailPts).toFixed(2));
-
-                        const shouldUpdate = pos.type === 'CE'
-                            ? newTrailSL > pos.slPrice!
-                            : newTrailSL < pos.slPrice!;
-
-                        if (shouldUpdate) {
-                            this.logger.log(
-                                `📈 2-CANDLE TRAIL: [${pos.symbol}] ${pos.type} SL ₹${pos.slPrice} → ₹${newTrailSL} (underlying ₹${ltp})`
-                            );
-                            this.paperTrading.updatePositionSL(pos.token, newTrailSL);
-                        }
-                    }
-                }
-
-                // Helper: place a mid-price limit sell for GANN_ANGLE/CANDLE_BREAKOUT target exits,
-                // or close immediately for SL exits and all other strategies.
-                // forceImmediate=true bypasses the limit order queue — used for SL exits where
-                // waiting for a fill causes the position to bleed further against us.
-                const triggerExit = async (reason: string, forceImmediate = false) => {
-                    const sellKey = `SELL:${pos.token}`;
-                    if (!forceImmediate && (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT')) {
-                        if (this.pendingLimitOrders.has(sellKey)) return; // already pending
-                        const midPrice = parseFloat(((currentBid + (optionInfo?.askPrice ?? currentBid)) / 2).toFixed(2));
-                        this.pendingLimitOrders.set(sellKey, {
-                            symbol: pos.symbol, token: pos.token, tradingSymbol: pos.tradingSymbol ?? '',
-                            type: pos.type, qty: pos.qty, midPrice, orderType: 'SELL',
-                            placedAt: Date.now(), strategyName: pos.strategyName, exitReason: reason
-                        });
-                        this.logger.log(`📋 GANN_ANGLE LIMIT SELL: [${pos.symbol}] at mid ₹${midPrice}. Reason: ${reason}`);
-                    } else {
-                        await this.paperTrading.closePosition(pos.token, currentBid, reason);
-                    }
-                };
-
-                if (pos.type === 'CE') {
-                    if (ltp >= pos.targetPrice) {
-                        this.logger.warn(`🎯 TARGET HIT: [${pos.symbol}] Underlying reached ₹${ltp} >= Target ₹${pos.targetPrice}`);
-                        await triggerExit(`Target Hit at ₹${ltp}`);
-                    } else if (ltp < pos.slPrice) {
-                        if (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT') {
-                            this.logger.warn(`🛑 SL HIT: [${pos.symbol}] ₹${ltp} < SL ₹${pos.slPrice}. Closing at market bid ₹${currentBid}.`);
-                            await triggerExit(`SL Broken at ₹${ltp}`, true);
-                        } else if (!pos.slTriggerTime) {
-                            const now = Date.now();
-                            this.paperTrading.updatePositionSLTrigger(pos.token, now);
-                            this.logger.debug(`⚠️ SL BREACH DETECTED: [${pos.symbol}] dropped to ₹${ltp} < SL ₹${pos.slPrice}. Starting SL timer.`);
-                        } else {
-                            const elapsed = Date.now() - pos.slTriggerTime;
-                            const slSustainMs = pos.strategyName === 'EMA_5' ? 60 * 1000 : pos.strategyName === 'GANN_9' ? 3 * 60 * 1000 : 5 * 60 * 1000;
-                            const slLabel = pos.strategyName === 'EMA_5' ? '1m' : pos.strategyName === 'GANN_9' ? '3m' : '5m';
-                            if (elapsed >= slSustainMs) {
-                                this.logger.warn(`🛑 STOP-LOSS HIT: [${pos.symbol}] Sustained below SL ₹${pos.slPrice} for ${slLabel}.`);
-                                await triggerExit(`SL Hit at ₹${ltp} (${slLabel} Sustain)`);
-                            } else {
-                                const secsLeft = Math.ceil((slSustainMs - elapsed) / 1000);
-                                this.logger.debug(`[${pos.symbol}] SL Breach. Wait ${secsLeft}s more for SL Execution.`);
-                            }
-                        }
-                    } else {
-                        if (pos.slTriggerTime) {
-                            this.logger.log(`✅ SL RECOVERY: [${pos.symbol}] recovered to ₹${ltp} >= SL ₹${pos.slPrice}. Cancelling SL timer.`);
-                            this.paperTrading.updatePositionSLTrigger(pos.token, undefined);
-                        }
-                    }
-                } else { // PE
-                    if (ltp <= pos.targetPrice) {
-                        this.logger.warn(`🎯 TARGET HIT: [${pos.symbol}] Underlying reached ₹${ltp} <= Target ₹${pos.targetPrice}`);
-                        await triggerExit(`Target Hit at ₹${ltp}`);
-                    } else if (ltp > pos.slPrice) {
-                        if (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT') {
-                            this.logger.warn(`🛑 SL HIT: [${pos.symbol}] ₹${ltp} > SL ₹${pos.slPrice}. Closing at market bid ₹${currentBid}.`);
-                            await triggerExit(`SL Broken at ₹${ltp}`, true);
-                        } else if (!pos.slTriggerTime) {
-                            const now = Date.now();
-                            this.paperTrading.updatePositionSLTrigger(pos.token, now);
-                            this.logger.debug(`⚠️ SL BREACH DETECTED: [${pos.symbol}] rose to ₹${ltp} > SL ₹${pos.slPrice}. Starting SL timer.`);
-                        } else {
-                            const elapsed = Date.now() - pos.slTriggerTime;
-                            const slSustainMs = pos.strategyName === 'EMA_5' ? 60 * 1000 : pos.strategyName === 'GANN_9' ? 3 * 60 * 1000 : 5 * 60 * 1000;
-                            const slLabel = pos.strategyName === 'EMA_5' ? '1m' : pos.strategyName === 'GANN_9' ? '3m' : '5m';
-                            if (elapsed >= slSustainMs) {
-                                this.logger.warn(`🛑 STOP-LOSS HIT: [${pos.symbol}] Sustained above SL ₹${pos.slPrice} for ${slLabel}.`);
-                                await triggerExit(`SL Hit at ₹${ltp} (${slLabel} Sustain)`);
-                            } else {
-                                const secsLeft = Math.ceil((slSustainMs - elapsed) / 1000);
-                                this.logger.debug(`[${pos.symbol}] SL Breach. Wait ${secsLeft}s more for SL Execution.`);
-                            }
-                        }
-                    } else {
-                        if (pos.slTriggerTime) {
-                            this.logger.log(`✅ SL RECOVERY: [${pos.symbol}] recovered to ₹${ltp} <= SL ₹${pos.slPrice}. Cancelling SL timer.`);
-                            this.paperTrading.updatePositionSLTrigger(pos.token, undefined);
-                        }
-                    }
-                }
-            }
+            await this.evaluateExitForPosition(pos, currentBid, optionInfo, 'CRON');
         }
     }
 

@@ -204,6 +204,11 @@ export class PaperTradingService implements OnModuleInit {
         return true;
     }
 
+    /** O(1) lookup of a live position by option token — used by the WS tick callback. */
+    getActivePositionByToken(token: string): PaperPosition | undefined {
+        return this.activePositions.get(token);
+    }
+
     /**
      * Updates the Options LTP
      */
