@@ -230,17 +230,14 @@ export class ScannerService implements OnModuleInit {
     /**
      * Gann Angle Momentum Cache Builder — Runs every 5 minutes, 9:20–11:30 AM IST (Mon-Fri)
      *
-     * Replaces the old "scan + add to watchlist immediately" approach.
-     * Now: fetches all 100 stocks, applies a 4-factor momentum filter, computes Gann Angle
+     * Fetches all Nifty 100 stocks, applies a 2-factor filter, computes Gann Angle
      * levels for qualifying stocks, and stores them in GANN_ANGLE_LEVELS cache.
      * The separate 30-second monitorGannAngleLevels cron reads this cache and detects
-     * fresh trigger crossings — eliminating both the 5-minute blind spot and chasing entries.
+     * angle crossings.
      *
-     * 4-Factor Momentum Filter (all derived from the single getMultiQuotes batch call):
-     *   1. pChange     > +1.0% (CE) / < -1.0% (PE)  — meaningful overnight move
-     *   2. openChange  > 0% (CE) / < 0% (PE)         — still moving in the right direction from open
-     *   3. rangePosition > 0.60 (CE) / < 0.40 (PE)   — holding near day's high/low (sustained pressure)
-     *   4. dayRangePct > 0.8%                         — stock is actually moving, not drifting sideways
+     * Filter (derived from the single getMultiQuotes batch call):
+     *   1. rangePosition > 0.60 (CE) / < 0.40 (PE) — holding near day's high/low
+     *   2. dayRangePct > 1.2%                       — meaningful intraday expansion
      */
     @Cron('0 */5 9-11 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async automatedGannAngleScan() {
@@ -259,24 +256,16 @@ export class ScannerService implements OnModuleInit {
             const momentumStocks: any[] = [];
 
             for (const stock of stocks) {
-                const ltp       = stock.ltp;
-                const prevClose = stock.prevClose || ltp;
-                const openPrice = stock.openPrice || ltp;
-                const dayHigh   = stock.dayHigh   || ltp;
-                const dayLow    = stock.dayLow    || ltp;
-                const pChange   = stock.pChange   || 0;
+                const ltp          = stock.ltp;
+                const prevClose    = stock.prevClose || ltp;
+                const dayHigh      = stock.dayHigh   || ltp;
+                const dayLow       = stock.dayLow    || ltp;
 
-                const openChange     = openPrice > 0 ? ((ltp - openPrice) / openPrice) * 100 : 0;
-                const dayRangePct    = prevClose  > 0 ? ((dayHigh - dayLow) / prevClose) * 100 : 0;
-                const rangePosition  = (dayHigh - dayLow) > 0 ? (ltp - dayLow) / (dayHigh - dayLow) : 0.5;
+                const dayRangePct   = prevClose > 0 ? ((dayHigh - dayLow) / prevClose) * 100 : 0;
+                const rangePosition = (dayHigh - dayLow) > 0 ? (ltp - dayLow) / (dayHigh - dayLow) : 0.5;
 
-                // Price filter: options must be liquid and tradeable
-                if (ltp < 500 || ltp > 40000) continue;
-
-                // dayRangePct > 1.2% acts as intraday ATR proxy — confirms the stock
-                // has enough expansion to make the 1x1 angle cross profitable
-                const isCeMomentum = pChange > 1.0 && openChange > 0 && rangePosition > 0.60 && dayRangePct > 1.2;
-                const isPeMomentum = pChange < -1.0 && openChange < 0 && rangePosition < 0.40 && dayRangePct > 1.2;
+                const isCeMomentum = rangePosition > 0.60 && dayRangePct > 1.2;
+                const isPeMomentum = rangePosition < 0.40 && dayRangePct > 1.2;
 
                 if (!isCeMomentum && !isPeMomentum) continue;
 
@@ -285,9 +274,8 @@ export class ScannerService implements OnModuleInit {
                 momentumStocks.push({ symbol: stock.symbol, type, levels });
             }
 
-            // 30-minute TTL — refreshed every 5 min, no need for a longer window
             await this.cacheManager.set('GANN_ANGLE_LEVELS', JSON.stringify(momentumStocks), 1800000);
-            this.logger.log(`✅ [${timeStr}] Gann Angle Levels Cache: ${momentumStocks.length}/${stocks.length} high-momentum stocks identified (pChange + openChange + range + volatility filter).`);
+            this.logger.log(`✅ [${timeStr}] Gann Angle Levels Cache: ${momentumStocks.length}/${stocks.length} stocks qualified (range position + day range filter).`);
         } catch (error) {
             this.logger.error(`Gann Angle Level Cache Build Failed: ${error.message}`);
         }
@@ -296,11 +284,8 @@ export class ScannerService implements OnModuleInit {
     /**
      * Gann Angle Level Monitor — Runs every 30 seconds, 9:20–11:30 AM IST (Mon-Fri)
      *
-     * Reads the GANN_ANGLE_LEVELS cache (momentum-filtered stocks) and checks if any
-     * stock's LTP has FRESHLY crossed its Gann 1x1 angle trigger (within 0.5% above for CE,
-     * 0.5% below for PE). When detected, adds to watchlist so the heartbeat can execute
-     * immediately (sustainMs = 0 for GANN_ANGLE). This replaces the 5-minute gap with
-     * 30-second continuous monitoring using the WS tick cache (zero REST cost).
+     * Reads the GANN_ANGLE_LEVELS cache and detects 1x1 angle crossings.
+     * Adds qualifying stocks to the watchlist for 1-min candle close confirmation.
      */
     @Cron('*/30 * * * * *')
     async monitorGannAngleLevels() {
@@ -326,43 +311,29 @@ export class ScannerService implements OnModuleInit {
 
         const ltpMap = await this.nseService.getBatchLTP(eligibleSymbols);
 
-        // Only fire when LTP freshly crosses the trigger — within 0.5% of angle level.
-        // Beyond 0.5% means the breakout already happened and entry would be chasing.
-        const FRESH_CROSS_PCT = 0.005;
-
         for (const item of momentumStocks) {
             if (todayTraded.includes(item.symbol)) continue;
 
             const ltp = ltpMap[item.symbol];
             if (!ltp) continue;
 
-            // Skip if already in watchlist (prevents duplicate entries)
-            const existing = await this.cacheManager.get(`WATCHLIST:${item.symbol}`);
-            if (existing) continue;
-
             const levels = item.levels;
 
             if (item.type === 'CE') {
-                // Fresh CE cross: LTP just cleared the 1x1_Up angle, still within 0.5% above it
-                const freshCross = ltp >= levels.angle1x1_Up &&
-                                   ltp <= levels.angle1x1_Up * (1 + FRESH_CROSS_PCT);
-                if (freshCross) {
+                if (ltp >= levels.angle1x1_Up) {
                     await this.heartbeatService.addToWatchlist(
                         item.symbol, levels.angle1x1_Up, 'CE',
                         levels.angle1x2_Up, levels.angle2x1_Up, 'GANN_ANGLE'
                     );
-                    this.logger.log(`📍 [Gann Angle] CE fresh cross: [${item.symbol}] LTP ₹${ltp} at 1x1_Up ₹${levels.angle1x1_Up} → watchlist`);
+                    this.logger.log(`📍 [Gann Angle] CE cross: [${item.symbol}] LTP ₹${ltp} at 1x1_Up ₹${levels.angle1x1_Up} → watchlist`);
                 }
             } else {
-                // Fresh PE cross: LTP just broke below the 1x1_Dn angle, still within 0.5% below it
-                const freshCross = ltp <= levels.angle1x1_Dn &&
-                                   ltp >= levels.angle1x1_Dn * (1 - FRESH_CROSS_PCT);
-                if (freshCross) {
+                if (ltp <= levels.angle1x1_Dn) {
                     await this.heartbeatService.addToWatchlist(
                         item.symbol, levels.angle1x1_Dn, 'PE',
                         levels.angle1x2_Dn, levels.angle2x1_Dn, 'GANN_ANGLE'
                     );
-                    this.logger.log(`📍 [Gann Angle] PE fresh cross: [${item.symbol}] LTP ₹${ltp} at 1x1_Dn ₹${levels.angle1x1_Dn} → watchlist`);
+                    this.logger.log(`📍 [Gann Angle] PE cross: [${item.symbol}] LTP ₹${ltp} at 1x1_Dn ₹${levels.angle1x1_Dn} → watchlist`);
                 }
             }
         }

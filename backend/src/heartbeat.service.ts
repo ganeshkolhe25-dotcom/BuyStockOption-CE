@@ -188,9 +188,9 @@ export class HeartbeatService {
                     ? ltp >= sustainThreshold
                     : ltp <= sustainThreshold;
 
-                // GANN_9: allow free movement during the wait — only check at the final 5-min mark.
-                // EMA_5 / GANN_ANGLE / CANDLE_BREAKOUT: invalidate immediately if LTP moves away.
-                if (!isSustaining && !isGann9) {
+                // GANN_9 / GANN_ANGLE: allow free movement during the wait — candle close confirms at the mark.
+                // EMA_5 / CANDLE_BREAKOUT: invalidate immediately if LTP moves away.
+                if (!isSustaining && !isGann9 && !isGannAngle) {
                     const invalidMsg = `Signal Invalidated: LTP ₹${ltp} moved away from ${entry.type} sustain threshold ₹${sustainThreshold.toFixed(2)} (trigger ₹${entry.triggerPrice}) during sustain period.`;
                     this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
                     this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
@@ -199,14 +199,14 @@ export class HeartbeatService {
                     continue;
                 }
 
-                // GANN_ANGLE / CANDLE_BREAKOUT: execute immediately — breakout is self-confirming
-                // EMA_5: 1-minute sustain (candle close + RSI + volume already confirms)
-                // GANN_9: 3-minute single final check (allows dips/recoveries within the window)
-                const sustainMs = (isGannAngle || isCandleBreakout) ? 0 : isEma ? 1 * 60 * 1000 : 5 * 60 * 1000;
+                // CANDLE_BREAKOUT: execute immediately — self-confirming on candle close
+                // GANN_ANGLE / EMA_5: 1-minute sustain with 1-min candle close confirmation
+                // GANN_9: 5-minute sustain with 5-min candle close confirmation
+                const sustainMs = isCandleBreakout ? 0 : (isGannAngle || isEma) ? 1 * 60 * 1000 : 5 * 60 * 1000;
                 const timeElapsedMs = Date.now() - entry.breakoutTime;
 
                 if (timeElapsedMs >= sustainMs) {
-                    if (!isSustaining && !isGann9) {
+                    if (!isSustaining && !isGann9 && !isGannAngle) {
                         const invalidMsg = `Signal Invalidated at 5-min check: LTP ₹${ltp} not sustaining ${entry.type} threshold ₹${sustainThreshold.toFixed(2)} (trigger ₹${entry.triggerPrice}).`;
                         this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
                         this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
@@ -216,7 +216,7 @@ export class HeartbeatService {
                     }
 
                     if (isGann9) {
-                        const candle = await this.getLastCompletedCandle(entry.symbol);
+                        const candle = await this.getLastCompletedCandle(entry.symbol, '5');
                         if (candle !== null) {
                             const confirmedByCandle = entry.type === 'CE'
                                 ? candle.close >= entry.triggerPrice * 1.001
@@ -250,7 +250,31 @@ export class HeartbeatService {
                         }
                     }
 
-                    const label = (isGannAngle || isCandleBreakout) ? 'IMMEDIATE' : isEma ? '1-MIN' : '5-MIN';
+                    if (isGannAngle) {
+                        const candle = await this.getLastCompletedCandle(entry.symbol, '1');
+                        if (candle !== null) {
+                            const confirmedByCandle = entry.type === 'CE'
+                                ? candle.close >= entry.triggerPrice
+                                : candle.close <= entry.triggerPrice;
+                            if (!confirmedByCandle) {
+                                const msg = `1-min candle close ₹${candle.close} did not confirm ${entry.type} trigger ₹${entry.triggerPrice.toFixed(2)}. Fake breakout — ignored.`;
+                                this.logger.warn(`❌ [${entry.symbol}] ${msg}`);
+                                this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, msg, entry.strategyName);
+                                await this.cacheManager.del(key);
+                                updatedKeys = updatedKeys.filter(k => k !== key);
+                                continue;
+                            }
+                            this.logger.log(
+                                `📊 [${entry.symbol}] GANN_ANGLE 1-MIN CANDLE CONFIRM: ` +
+                                `close ₹${candle.close} | high ₹${candle.high} | low ₹${candle.low} | ` +
+                                `trigger ₹${entry.triggerPrice.toFixed(2)}`
+                            );
+                        } else {
+                            this.logger.warn(`[${entry.symbol}] Could not fetch 1-min candle — proceeding with tick confirmation.`);
+                        }
+                    }
+
+                    const label = isCandleBreakout ? 'IMMEDIATE' : (isGannAngle || isEma) ? '1-MIN' : '5-MIN';
                     const entryDistPct = isGann9
                         ? ((Math.abs(ltp - entry.triggerPrice) / entry.triggerPrice) * 100).toFixed(2)
                         : null;
@@ -940,11 +964,11 @@ export class HeartbeatService {
         this.logger.log('[2-Candle] Half-exit tracker cleared for new day.');
     }
 
-    private async getLastCompletedCandle(symbol: string): Promise<{ close: number; high: number; low: number } | null> {
+    private async getLastCompletedCandle(symbol: string, interval: '1' | '5' = '5'): Promise<{ close: number; high: number; low: number } | null> {
         const token = this.nseService.getToken(symbol);
         if (!token) return null;
         try {
-            const candles = await this.shoonyaService.getTimePriceSeries('NSE', token, '5', 2);
+            const candles = await this.shoonyaService.getTimePriceSeries('NSE', token, interval, 2);
             if (!candles || candles.length < 2) return null;
             const c     = candles[1];
             const close = parseFloat(c?.intc || '0');
@@ -953,7 +977,7 @@ export class HeartbeatService {
             if (close <= 0) return null;
             return { close, high, low };
         } catch (err: any) {
-            this.logger.warn(`[${symbol}] 5-min candle fetch failed: ${err.message}`);
+            this.logger.warn(`[${symbol}] ${interval}-min candle fetch failed: ${err.message}`);
             return null;
         }
     }
