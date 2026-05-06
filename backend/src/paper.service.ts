@@ -303,6 +303,7 @@ export class PaperTradingService implements OnModuleInit {
         }
 
         this.activePositions.delete(token);
+        this.shoonyaService.unsubscribeOptionToken(token);
 
         this.logger.log(`🔒 POSITION CLOSED: [${position.symbol}] ${position.type} closed at ₹${exitPrice}. P&L: ₹${pnl.toFixed(2)}. Reason: ${reason}`);
     }
@@ -604,8 +605,11 @@ export class PaperTradingService implements OnModuleInit {
      */
     async resetAllPositionsForCapital() {
         this.logger.warn('⚠️ RESET SIGNAL RECEIVED: Clearing all active and open trades to restore capital.');
-        
-        // 1. Clear In-Memory
+
+        // 1. Clear In-Memory — unsubscribe WS option ticks before wiping the map
+        for (const token of this.activePositions.keys()) {
+            this.shoonyaService.unsubscribeOptionToken(token);
+        }
         this.activePositions.clear();
 
         // 2. Mark all OPEN in DB as closed/reconciled

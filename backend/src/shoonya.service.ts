@@ -52,6 +52,17 @@ export class ShoonyaService implements OnModuleInit {
     private wsHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
     private readonly subscribedKeys = new Set<string>(); // "NSE|token" keys
 
+    // ── Option tick feed (NFO) ─────────────────────────────────────────────────
+    // Separate from stock tickCache so bid/ask/timestamp are stored per option token.
+    // Populated by WS ticks; read by enforceDynamicExits() as the primary price source.
+    private readonly optionTickCache = new Map<string, {
+        ltp: number;
+        bidPrice: number;
+        askPrice: number;
+        timestamp: number;
+    }>();
+    private readonly subscribedOptionTokens = new Set<string>(); // NFO token strings
+
     constructor(private readonly prisma: PrismaService) {}
 
     async onModuleInit() {
@@ -897,15 +908,35 @@ export class ShoonyaService implements OnModuleInit {
                         socket.close();
                         return;
                     }
-                    // Handshake acknowledged — re-send all subscriptions
-                    this.logger.log(`[WS] Handshake OK. Re-subscribing ${this.subscribedKeys.size} token(s).`);
+                    // Handshake acknowledged — re-send all stock + option subscriptions
+                    this.logger.log(`[WS] Handshake OK. Re-subscribing ${this.subscribedKeys.size} stock token(s) and ${this.subscribedOptionTokens.size} option token(s).`);
                     if (this.subscribedKeys.size > 0) {
                         socket.send(JSON.stringify({ t: 't', k: Array.from(this.subscribedKeys).join('#') }));
                     }
+                    if (this.subscribedOptionTokens.size > 0) {
+                        const optionKeys = Array.from(this.subscribedOptionTokens).map(t => `NFO|${t}`).join('#');
+                        socket.send(JSON.stringify({ t: 't', k: optionKeys }));
+                    }
                 } else if (msg.t === 'tk' || msg.t === 'tf' || msg.t === 'dk') {
                     // tk = initial full tick on subscribe, tf = subsequent changed fields, dk = depth
-                    if (msg.tk && msg.lp) {
-                        this.tickCache.set(msg.tk, parseFloat(msg.lp));
+                    if (msg.tk) {
+                        if (msg.e === 'NFO') {
+                            // Option tick — store ltp/bid/ask with timestamp for WS-based exit monitoring.
+                            // tf messages only send changed fields, so merge with last known values.
+                            const prev = this.optionTickCache.get(msg.tk) ?? { ltp: 0, bidPrice: 0, askPrice: 0, timestamp: 0 };
+                            const updated = {
+                                ltp:       msg.lp  ? parseFloat(msg.lp)  : prev.ltp,
+                                bidPrice:  msg.bp1 ? parseFloat(msg.bp1) : prev.bidPrice,
+                                askPrice:  msg.sp1 ? parseFloat(msg.sp1) : prev.askPrice,
+                                timestamp: Date.now(),
+                            };
+                            if (updated.ltp > 0 || updated.bidPrice > 0) {
+                                this.optionTickCache.set(msg.tk, updated);
+                            }
+                        } else if (msg.lp) {
+                            // NSE/BSE stock tick — existing behaviour unchanged
+                            this.tickCache.set(msg.tk, parseFloat(msg.lp));
+                        }
                     }
                 }
             } catch { /* ignore malformed frames */ }
@@ -951,6 +982,44 @@ export class ShoonyaService implements OnModuleInit {
         return this.tickCache.get(token) ?? null;
     }
 
+    /**
+     * Subscribe an NFO option token to the live WS feed so bid/ask ticks are
+     * received in real-time. Safe to call multiple times — duplicate calls are ignored.
+     * Tokens queued while WS is down are automatically re-subscribed on reconnect.
+     */
+    subscribeOptionToken(token: string): void {
+        if (!token || token.includes('Dummy') || isNaN(Number(token))) return;
+        if (this.subscribedOptionTokens.has(token)) return; // no duplicate subscription
+        this.subscribedOptionTokens.add(token);
+        if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ t: 't', k: `NFO|${token}` }));
+            this.logger.log(`[WS] Subscribed option token: ${token}`);
+        } else {
+            this.logger.debug(`[WS] Option token ${token} queued — will subscribe on next WS connect.`);
+        }
+    }
+
+    /**
+     * Unsubscribe an NFO option token and remove its cached tick data.
+     * Called when a position is fully closed so stale data does not linger.
+     */
+    unsubscribeOptionToken(token: string): void {
+        if (!token || !this.subscribedOptionTokens.has(token)) return;
+        this.subscribedOptionTokens.delete(token);
+        this.optionTickCache.delete(token);
+        if (this.ws?.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ t: 'u', k: `NFO|${token}` }));
+            this.logger.log(`[WS] Unsubscribed option token: ${token}`);
+        }
+    }
+
+    /**
+     * Returns the latest WS tick data for an option token (ltp, bidPrice, askPrice,
+     * timestamp), or null if the token is not subscribed / no tick received yet.
+     */
+    getOptionTickPrice(token: string): { ltp: number; bidPrice: number; askPrice: number; timestamp: number } | null {
+        return this.optionTickCache.get(token) ?? null;
+    }
 
     /** Close WS, clear tick cache, and cancel pending reconnect (e.g. EOD) */
     disconnectTickFeed(): void {
@@ -961,7 +1030,9 @@ export class ShoonyaService implements OnModuleInit {
         this.ws = null;
         this.tickCache.clear();
         this.subscribedKeys.clear();
-        this.logger.log('[WS] Tick feed disconnected and cache cleared.');
+        this.optionTickCache.clear();
+        this.subscribedOptionTokens.clear();
+        this.logger.log('[WS] Tick feed disconnected and cache cleared (stocks + options).');
     }
 
     /** EOD cleanup: disconnect feed at 3:30 PM IST so tokens don't carry over to next day */

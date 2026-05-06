@@ -37,6 +37,10 @@ export class HeartbeatService {
     private readonly logger = new Logger(HeartbeatService.name);
     // Use NestJS built-in memory cache to replace external Redis for local evaluation
 
+    // WS tick is considered fresh if received within this window.
+    // 30s matches the WS heartbeat ping interval — if no tick arrives in 30s the feed is likely dead.
+    private readonly TICK_STALENESS_MS = 30_000;
+
     private dailyTradesCount = 0;
     private lastHeartbeatTime = new Date().toISOString();
     private pendingLimitOrders = new Map<string, PendingLimitOrder>();
@@ -461,6 +465,7 @@ export class HeartbeatService {
             if (isSettled) {
                 this.dailyTradesCount++;
                 this.logger.log(`✅ PAPER TRADE SUCCESS: [${symbol}] ${type} Bought at ₹${optionPremiumInfo.askPrice} (Ask Price)`);
+                this.shoonyaService.subscribeOptionToken(contract.token);
             }
 
             // The periodic Universal Monitor handles exits
@@ -630,17 +635,30 @@ export class HeartbeatService {
 
         for (const pos of positions) {
 
-            // 1. Fetch Option Premium Quote
-            const optionInfo = await this.shoonyaService.getOptionQuote(pos.token);
+            // 1. Fetch Option Premium Quote — prefer live WS tick, fall back to REST if stale/absent.
+            const tick = this.shoonyaService.getOptionTickPrice(pos.token);
             let currentBid = pos.currentLtp;
+            let optionInfo: { ltp: number; askPrice: number; bidPrice: number } | null = null;
 
-            if (optionInfo) {
-                currentBid = optionInfo.bidPrice > 0 ? optionInfo.bidPrice : optionInfo.ltp;
-                
-                // CRITICAL: We update the system with the REALIZABLE price (Bid) for all PnL and logic checks
-                // but we can also store the LTP for chart visualization if needed.
+            if (tick && (Date.now() - tick.timestamp) < this.TICK_STALENESS_MS) {
+                // Fresh WS tick — use real-time bid price (zero REST calls)
+                currentBid = tick.bidPrice > 0 ? tick.bidPrice : tick.ltp;
+                optionInfo = { ltp: tick.ltp, bidPrice: tick.bidPrice, askPrice: tick.askPrice > 0 ? tick.askPrice : tick.ltp };
                 this.paperTrading.updatePositionLTP(pos.token, currentBid);
-                // Optionally log LTP specifically if needed, but Bid is the "Liquid" price.
+                this.logger.debug(`[WS] Using tickCache price for token: ${pos.token} (bid ₹${currentBid})`);
+            } else {
+                // REST fallback — WS tick absent or stale
+                optionInfo = await this.shoonyaService.getOptionQuote(pos.token);
+                if (tick) {
+                    this.logger.debug(`[REST] Fallback price used for token: ${pos.token} (WS tick stale: ${Date.now() - tick.timestamp}ms old)`);
+                } else {
+                    this.logger.debug(`[REST] Fallback price used for token: ${pos.token} (no WS tick received yet)`);
+                }
+                if (optionInfo) {
+                    currentBid = optionInfo.bidPrice > 0 ? optionInfo.bidPrice : optionInfo.ltp;
+                    // CRITICAL: We update the system with the REALIZABLE price (Bid) for all PnL and logic checks
+                    this.paperTrading.updatePositionLTP(pos.token, currentBid);
+                }
             }
 
             // GANN_9 / GANN_ANGLE: option premium stop — exit if bid falls to 60% of entry price (40% loss).
@@ -839,12 +857,23 @@ export class HeartbeatService {
 
         for (const [key, order] of this.pendingLimitOrders.entries()) {
             const elapsed = Date.now() - order.placedAt;
-            const optionInfo = await this.shoonyaService.getOptionQuote(order.token);
 
-            if (!optionInfo) continue; // API unavailable — retry next cycle
+            // Prefer WS tick for fill checks; fall back to REST if tick absent or stale
+            const orderTick = this.shoonyaService.getOptionTickPrice(order.token);
+            let currentLtp: number;
+            let currentBid: number;
 
-            const currentLtp = optionInfo.ltp;
-            const currentBid = optionInfo.bidPrice > 0 ? optionInfo.bidPrice : currentLtp;
+            if (orderTick && (Date.now() - orderTick.timestamp) < this.TICK_STALENESS_MS) {
+                currentLtp = orderTick.ltp;
+                currentBid = orderTick.bidPrice > 0 ? orderTick.bidPrice : orderTick.ltp;
+                this.logger.debug(`[WS] Using tickCache price for token: ${order.token} (ltp ₹${currentLtp})`);
+            } else {
+                const optionInfo = await this.shoonyaService.getOptionQuote(order.token);
+                if (!optionInfo) continue; // API unavailable — retry next cycle
+                this.logger.debug(`[REST] Fallback price used for token: ${order.token}`);
+                currentLtp = optionInfo.ltp;
+                currentBid = optionInfo.bidPrice > 0 ? optionInfo.bidPrice : currentLtp;
+            }
 
             if (order.orderType === 'BUY') {
                 // Fill condition: market LTP has come down to (or below) our mid price limit
@@ -859,6 +888,7 @@ export class HeartbeatService {
                     if (isSettled) {
                         this.dailyTradesCount++;
                         this.logger.log(`✅ GANN_ANGLE LIMIT BUY FILLED: [${order.symbol}] ${order.type} at mid ₹${order.midPrice}`);
+                        this.shoonyaService.subscribeOptionToken(order.token);
                     }
                     toDelete.push(key);
 
