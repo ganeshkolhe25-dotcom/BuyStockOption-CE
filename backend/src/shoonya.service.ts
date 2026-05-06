@@ -512,6 +512,8 @@ export class ShoonyaService implements OnModuleInit {
         // We use an explicit dictionary for irregular high-volume stocks (like TITAN, LT, VOLTAS)
         // to prevent Shoonya's fuzzy search from returning distant OTM/ITM strikes.
         const NSE_STOCK_STEPS: Record<string, number> = {
+            'NIFTY': 50,
+            'BANKNIFTY': 100,
             'TITAN': 20,
             'LT': 20,
             'VOLTAS': 20,

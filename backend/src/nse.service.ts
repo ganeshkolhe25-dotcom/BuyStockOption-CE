@@ -258,9 +258,11 @@ export class NseService implements OnModuleInit {
                     const ltp = parseFloat(sorted[sorted.length - 1]?.intc || '0');
                     const prevClose = parseFloat(sorted[sorted.length - 2]?.intc || sorted[sorted.length - 1]?.intc || '0');
                     if (ltp > 0 && prevClose > 0) {
+                        const openPrice = parseFloat(sorted[sorted.length - 1]?.into || String(ltp));
                         const pChange = ((ltp - prevClose) / prevClose) * 100;
-                        finalized.push({ symbol, ltp, pChange: parseFloat(pChange.toFixed(2)), prevClose });
-                        this.logger.log(`[Gann-9] ${symbol} index added: LTP=${ltp} prevClose=${prevClose}`);
+                        const proxyRdx = pChange > 1.5 ? 58 : pChange < -1.5 ? 42 : 50;
+                        finalized.push({ symbol, ltp, pChange: parseFloat(pChange.toFixed(2)), prevClose, openPrice, rdx: proxyRdx });
+                        this.logger.log(`[Gann-9] ${symbol} index added: LTP=${ltp} prevClose=${prevClose} openPrice=${openPrice} rdx=${proxyRdx}`);
                     }
                 }
             } catch (err: any) {
@@ -311,7 +313,7 @@ export class NseService implements OnModuleInit {
      * (video: buy setups on 15-min chart, sell setups on 5-min chart).
      */
     async scanEma5_15mUniverse(symbols?: string[]): Promise<NSE15mData[]> {
-        const targetSymbols = symbols ?? CUSTOM_TRADING_UNIVERSE;
+        const targetSymbols = [...(symbols ?? CUSTOM_TRADING_UNIVERSE), 'NIFTY', 'BANKNIFTY'];
         this.logger.log(`Fetching 15-min Shoonya Candles for ${targetSymbols.length} EMA universe stocks (CE scan)...`);
         const processed: NSE15mData[] = [];
 
@@ -364,7 +366,8 @@ export class NseService implements OnModuleInit {
         // const isOverstretched = indicators.rsi > 70 || indicators.rsi < 30;
         // if (isRangebound && hasRange && isOverstretched) universe.push(sym);
 
-        this.logger.log(`[5 EMA] Universe ready: ${universe.length}/${CUSTOM_TRADING_UNIVERSE.length} stocks (no ADX/ATR/RSI pre-filter).`);
+        universe.push('NIFTY', 'BANKNIFTY');
+        this.logger.log(`[5 EMA] Universe ready: ${universe.length} stocks (${CUSTOM_TRADING_UNIVERSE.length} custom + NIFTY + BANKNIFTY).`);
         return universe;
     }
 
@@ -373,7 +376,7 @@ export class NseService implements OnModuleInit {
      * Uses the ADX-filtered morning universe when provided; falls back to VOLATILE_NIFTY100.
      */
     async scanEma5mUniverse(symbols?: string[]): Promise<NSE15mData[]> {
-        const targetSymbols = symbols ?? CUSTOM_TRADING_UNIVERSE;
+        const targetSymbols = [...(symbols ?? CUSTOM_TRADING_UNIVERSE), 'NIFTY', 'BANKNIFTY'];
         this.logger.log(`Fetching 5-min Shoonya Candles for ${targetSymbols.length} EMA universe stocks...`);
         const processed: NSE15mData[] = [];
 
