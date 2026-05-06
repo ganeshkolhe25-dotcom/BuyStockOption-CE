@@ -352,11 +352,8 @@ export class NseService implements OnModuleInit {
         const universe: string[] = [];
         for (const item of quotes) {
             if (!item.lp || !item.tsym) continue;
-            const ltp = parseFloat(item.lp);
-            if (ltp >= 100) {
-                const sym = item.tsym.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym;
-                universe.push(sym);
-            }
+            const sym = item.tsym.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym;
+            universe.push(sym);
         }
 
         // ADX/ATR/RSI pre-filters commented out — signal detection (alert+activation candle vs EMA)

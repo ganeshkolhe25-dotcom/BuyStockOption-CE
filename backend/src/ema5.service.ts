@@ -52,8 +52,6 @@ export class Ema5Service {
         };
 
         const { closes, highs, lows } = data;
-        // ATR(14) needs 14 periods + 1 offset candle for alert/activation alignment
-        if (closes.length < 16) return { ...NONE, status: 'Not enough candles' };
 
         // Calculate 5 EMA over all available closes
         const emaResult = new EMA({ values: closes, period: 5 }).getResult();
@@ -76,9 +74,9 @@ export class Ema5Service {
         const atr    = atrResult.length > 0 ? atrResult[atrResult.length - 1] : 5;
         const buffer = parseFloat((0.1 * atr).toFixed(2));
 
-        // ── RSI(14) confirmation filter (Item 3) ─────────────────────────────
-        const rsiResult = new RSI({ values: closes, period: 14 }).getResult();
-        const latestRsi = rsiResult.length > 0 ? rsiResult[rsiResult.length - 1] : null;
+        const rsiResult  = new RSI({ values: closes, period: 14 }).getResult();
+        const latestRsi  = rsiResult.length > 0 ? rsiResult[rsiResult.length - 1] : null;
+        const previousRsi = rsiResult.length > 1 ? rsiResult[rsiResult.length - 2] : null;
 
         // ── Volume surge filter (Item 3) ──────────────────────────────────────
         // Current candle volume must exceed the 10-period average
@@ -100,11 +98,10 @@ export class Ema5Service {
         // ── PE Setup: alert candle CLOSES above EMA (wick may cross — close is the signal) ──
         if (alertClose > emaAtAlert) {
             if (actLow < alertLow) {
-                // RSI filter removed — was: RSI > 50 required for PE
-                // if (latestRsi !== null && latestRsi < 50) {
-                //     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
-                //         status: `Blocked: RSI=${latestRsi.toFixed(1)} must be >50 for PE (above midpoint)` };
-                // }
+                if (latestRsi !== null && previousRsi !== null && (latestRsi < 35 || latestRsi > 55 || latestRsi >= previousRsi)) {
+                    return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
+                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be 35–55 and falling for PE` };
+                }
                 if (!volumeSurge) {
                     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
                         status: 'Blocked: No volume surge on activation candle (PE)' };
@@ -114,7 +111,7 @@ export class Ema5Service {
                 const risk   = parseFloat((sl - entry).toFixed(2));
                 const target = parseFloat((entry - 3 * risk).toFixed(2));
                 this.logger.debug(
-                    `[${data.symbol}] PE: AlertLow=${alertLow} EMA=${emaAtAlert.toFixed(2)} ATR=${atr.toFixed(2)} Buf=${buffer} RSI=${latestRsi?.toFixed(1)} → E=${entry} SL=${sl} T=${target}`
+                    `[${data.symbol}] PE: AlertLow=${alertLow} EMA=${emaAtAlert.toFixed(2)} ATR=${atr.toFixed(2)} Buf=${buffer} RSI=${latestRsi?.toFixed(1)} prev=${previousRsi?.toFixed(1)} → E=${entry} SL=${sl} T=${target}`
                 );
                 return {
                     symbol: data.symbol, type: 'PE',
@@ -128,11 +125,10 @@ export class Ema5Service {
         // ── CE Setup: alert candle CLOSES below EMA (wick may cross — close is the signal) ──
         if (alertClose < emaAtAlert) {
             if (actHigh > alertHigh) {
-                // RSI filter removed — was: RSI < 50 required for CE
-                // if (latestRsi !== null && latestRsi > 50) {
-                //     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
-                //         status: `Blocked: RSI=${latestRsi.toFixed(1)} must be <50 for CE (below midpoint)` };
-                // }
+                if (latestRsi !== null && previousRsi !== null && (latestRsi < 45 || latestRsi > 65 || latestRsi <= previousRsi)) {
+                    return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
+                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be 45–65 and rising for CE` };
+                }
                 if (!volumeSurge) {
                     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
                         status: 'Blocked: No volume surge on activation candle (CE)' };
@@ -142,7 +138,7 @@ export class Ema5Service {
                 const risk   = parseFloat((entry - sl).toFixed(2));
                 const target = parseFloat((entry + 3 * risk).toFixed(2));
                 this.logger.debug(
-                    `[${data.symbol}] CE: AlertHigh=${alertHigh} EMA=${emaAtAlert.toFixed(2)} ATR=${atr.toFixed(2)} Buf=${buffer} RSI=${latestRsi?.toFixed(1)} → E=${entry} SL=${sl} T=${target}`
+                    `[${data.symbol}] CE: AlertHigh=${alertHigh} EMA=${emaAtAlert.toFixed(2)} ATR=${atr.toFixed(2)} Buf=${buffer} RSI=${latestRsi?.toFixed(1)} prev=${previousRsi?.toFixed(1)} → E=${entry} SL=${sl} T=${target}`
                 );
                 return {
                     symbol: data.symbol, type: 'CE',

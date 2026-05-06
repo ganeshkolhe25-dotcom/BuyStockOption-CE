@@ -179,7 +179,7 @@ export class HeartbeatService {
                 const isCandleBreakout = entry.strategyName === 'CANDLE_BREAKOUT';
                 const isGann9 = entry.strategyName === 'GANN_9';
 
-                const bufferPct = isEma ? 0.005 : 0.0005;
+                const bufferPct = 0.0005;
                 const sustainThreshold = entry.type === 'CE'
                     ? entry.triggerPrice * (1 - bufferPct)
                     : entry.triggerPrice * (1 + bufferPct);
@@ -188,9 +188,9 @@ export class HeartbeatService {
                     ? ltp >= sustainThreshold
                     : ltp <= sustainThreshold;
 
-                // GANN_9 / GANN_ANGLE: allow free movement during the wait — candle close confirms at the mark.
-                // EMA_5 / CANDLE_BREAKOUT: invalidate immediately if LTP moves away.
-                if (!isSustaining && !isGann9 && !isGannAngle) {
+                // GANN_9 / GANN_ANGLE / EMA_5: allow free movement during the wait.
+                // CANDLE_BREAKOUT: invalidate immediately if LTP moves away.
+                if (!isSustaining && !isGann9 && !isGannAngle && !isEma) {
                     const invalidMsg = `Signal Invalidated: LTP ₹${ltp} moved away from ${entry.type} sustain threshold ₹${sustainThreshold.toFixed(2)} (trigger ₹${entry.triggerPrice}) during sustain period.`;
                     this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
                     this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
@@ -206,7 +206,7 @@ export class HeartbeatService {
                 const timeElapsedMs = Date.now() - entry.breakoutTime;
 
                 if (timeElapsedMs >= sustainMs) {
-                    if (!isSustaining && !isGann9 && !isGannAngle) {
+                    if (!isSustaining && !isGann9 && !isGannAngle && !isEma) {
                         const invalidMsg = `Signal Invalidated at 5-min check: LTP ₹${ltp} not sustaining ${entry.type} threshold ₹${sustainThreshold.toFixed(2)} (trigger ₹${entry.triggerPrice}).`;
                         this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
                         this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
