@@ -49,6 +49,8 @@ export class HeartbeatService {
     private readonly cbHalfExited = new Set<string>();
     // Gann Angle: tokens where partial booking at +5% premium has been done
     private readonly gaHalfExited = new Set<string>();
+    // Gann Angle: 5-min candle close cache — refreshed at most every 30s to avoid Shoonya rate limits
+    private readonly gannAngleCandleCache = new Map<string, { close: number; fetchedAt: number }>();
 
     constructor(
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
@@ -785,7 +787,16 @@ export class HeartbeatService {
                     this.logger.warn(`🎯 TARGET HIT: [${pos.symbol}] Underlying reached ₹${ltp} >= Target ₹${pos.targetPrice}`);
                     await triggerExit(`Target Hit at ₹${ltp}`);
                 } else if (ltp < pos.slPrice) {
-                    if (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT') {
+                    if (pos.strategyName === 'GANN_ANGLE') {
+                        // Wait for a full 5-min candle to close below SL — avoids wick-based stops
+                        const candleClose = await this.getGannAngleCandleClose(pos.symbol);
+                        if (candleClose !== null && candleClose < pos.slPrice) {
+                            this.logger.warn(`🛑 SL HIT (5-MIN CLOSE): [${pos.symbol}] candle close ₹${candleClose} < SL ₹${pos.slPrice}. Exiting.`);
+                            await triggerExit(`SL Hit: 5-min candle close ₹${candleClose} < SL ₹${pos.slPrice}`, true);
+                        } else {
+                            this.logger.debug(`[${pos.symbol}] LTP wick ₹${ltp} below SL ₹${pos.slPrice} — 5-min close ₹${candleClose ?? 'N/A'} still holds. Waiting.`);
+                        }
+                    } else if (pos.strategyName === 'CANDLE_BREAKOUT') {
                         this.logger.warn(`🛑 SL HIT: [${pos.symbol}] ₹${ltp} < SL ₹${pos.slPrice}. Closing at market bid ₹${currentBid}.`);
                         await triggerExit(`SL Broken at ₹${ltp}`, true);
                     } else if (!pos.slTriggerTime) {
@@ -813,7 +824,16 @@ export class HeartbeatService {
                     this.logger.warn(`🎯 TARGET HIT: [${pos.symbol}] Underlying reached ₹${ltp} <= Target ₹${pos.targetPrice}`);
                     await triggerExit(`Target Hit at ₹${ltp}`);
                 } else if (ltp > pos.slPrice) {
-                    if (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT') {
+                    if (pos.strategyName === 'GANN_ANGLE') {
+                        // Wait for a full 5-min candle to close above SL — avoids wick-based stops
+                        const candleClose = await this.getGannAngleCandleClose(pos.symbol);
+                        if (candleClose !== null && candleClose > pos.slPrice) {
+                            this.logger.warn(`🛑 SL HIT (5-MIN CLOSE): [${pos.symbol}] candle close ₹${candleClose} > SL ₹${pos.slPrice}. Exiting.`);
+                            await triggerExit(`SL Hit: 5-min candle close ₹${candleClose} > SL ₹${pos.slPrice}`, true);
+                        } else {
+                            this.logger.debug(`[${pos.symbol}] LTP wick ₹${ltp} above SL ₹${pos.slPrice} — 5-min close ₹${candleClose ?? 'N/A'} still holds. Waiting.`);
+                        }
+                    } else if (pos.strategyName === 'CANDLE_BREAKOUT') {
                         this.logger.warn(`🛑 SL HIT: [${pos.symbol}] ₹${ltp} > SL ₹${pos.slPrice}. Closing at market bid ₹${currentBid}.`);
                         await triggerExit(`SL Broken at ₹${ltp}`, true);
                     } else if (!pos.slTriggerTime) {
@@ -995,12 +1015,28 @@ export class HeartbeatService {
         return watchlist;
     }
 
-    /** EOD: clear half-exit trackers so next day starts fresh */
+    /** EOD: clear half-exit trackers and candle cache so next day starts fresh */
     @Cron('40 15 * * 1-5', { timeZone: 'Asia/Kolkata' })
     clearCandleBreakoutState() {
         this.cbHalfExited.clear();
         this.gaHalfExited.clear();
-        this.logger.log('[EOD] Half-exit trackers cleared for new day (2-Candle + GANN_ANGLE).');
+        this.gannAngleCandleCache.clear();
+        this.logger.log('[EOD] Half-exit trackers and GANN_ANGLE candle cache cleared for new day.');
+    }
+
+    /**
+     * Returns the last completed 5-min candle close for a symbol, cached for 30s.
+     * Called on every SL-breach tick for GANN_ANGLE — the cache prevents Shoonya rate-limit hits.
+     */
+    private async getGannAngleCandleClose(symbol: string): Promise<number | null> {
+        const cached = this.gannAngleCandleCache.get(symbol);
+        if (cached && (Date.now() - cached.fetchedAt) < 30_000) {
+            return cached.close;
+        }
+        const candle = await this.getLastCompletedCandle(symbol, '5');
+        if (candle === null) return null;
+        this.gannAngleCandleCache.set(symbol, { close: candle.close, fetchedAt: Date.now() });
+        return candle.close;
     }
 
     private async getLastCompletedCandle(symbol: string, interval: '1' | '5' = '5'): Promise<{ close: number; high: number; low: number } | null> {
