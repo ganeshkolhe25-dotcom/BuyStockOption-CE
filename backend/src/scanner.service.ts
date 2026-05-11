@@ -228,7 +228,7 @@ export class ScannerService implements OnModuleInit {
     }
 
     /**
-     * Gann Angle Momentum Cache Builder — Runs every 5 minutes, 9:20–12:45 PM IST (Mon-Fri)
+     * Gann Angle Momentum Cache Builder — Runs every 5 minutes, 9:30–12:45 PM IST (Mon-Fri)
      *
      * Fetches all Nifty 100 stocks, applies a 2-factor filter, computes Gann Angle
      * levels for qualifying stocks, and stores them in GANN_ANGLE_LEVELS cache.
@@ -243,7 +243,7 @@ export class ScannerService implements OnModuleInit {
     async automatedGannAngleScan() {
         const now = new Date();
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
-        if (timeStr < '09:20:00' || timeStr > '12:45:00') return;
+        if (timeStr < '09:30:00' || timeStr > '12:45:00') return;
 
         const config = await this.prisma.shoonyaConfig.findFirst();
         if (config && !config.gannAngleEnabled) {
@@ -282,7 +282,7 @@ export class ScannerService implements OnModuleInit {
     }
 
     /**
-     * Gann Angle Level Monitor — Runs every 30 seconds, 9:20–12:45 PM IST (Mon-Fri)
+     * Gann Angle Level Monitor — Runs every 30 seconds, 9:30–12:45 PM IST (Mon-Fri)
      *
      * Reads the GANN_ANGLE_LEVELS cache and detects R_90 / S_90 angle crossings.
      * Adds qualifying stocks to the watchlist for 5-min candle close confirmation.
@@ -294,7 +294,7 @@ export class ScannerService implements OnModuleInit {
         if (!this.isMarketHours()) return;
         const now = new Date();
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
-        if (timeStr < '09:20:00' || timeStr > '12:45:00') return;
+        if (timeStr < '09:30:00' || timeStr > '12:45:00') return;
 
         const cached = await this.cacheManager.get<string>('GANN_ANGLE_LEVELS');
         if (!cached) return;

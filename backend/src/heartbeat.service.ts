@@ -657,6 +657,16 @@ export class HeartbeatService {
             }
         };
 
+        // ── GANN_ANGLE: forced time exit at 14:45 PM ─────────────────────────────
+        if (pos.strategyName === 'GANN_ANGLE') {
+            const timeStr = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+            if (timeStr >= '14:45:00') {
+                this.logger.warn(`⏰ [${pos.symbol}] GANN_ANGLE TIME EXIT: ${timeStr} >= 14:45. Closing immediately.`);
+                await triggerExit('TIME_EXIT_14:45', true);
+                return;
+            }
+        }
+
         // ── Option premium stop ──────────────────────────────────────────────────
         // GANN_9: exit at 60% of entry (wide stop for structural breakout trades)
         // GANN_ANGLE: exit at 95% of entry (tight 5% stop — matches Nirwana strategy)
@@ -985,11 +995,12 @@ export class HeartbeatService {
         return watchlist;
     }
 
-    /** EOD: clear 2-candle half-exit tracker so next day starts fresh */
+    /** EOD: clear half-exit trackers so next day starts fresh */
     @Cron('40 15 * * 1-5', { timeZone: 'Asia/Kolkata' })
     clearCandleBreakoutState() {
         this.cbHalfExited.clear();
-        this.logger.log('[2-Candle] Half-exit tracker cleared for new day.');
+        this.gaHalfExited.clear();
+        this.logger.log('[EOD] Half-exit trackers cleared for new day (2-Candle + GANN_ANGLE).');
     }
 
     private async getLastCompletedCandle(symbol: string, interval: '1' | '5' = '5'): Promise<{ close: number; high: number; low: number } | null> {
