@@ -228,7 +228,7 @@ export class ScannerService implements OnModuleInit {
     }
 
     /**
-     * Gann Angle Momentum Cache Builder — Runs every 5 minutes, 9:20–11:30 AM IST (Mon-Fri)
+     * Gann Angle Momentum Cache Builder — Runs every 5 minutes, 9:20–12:45 PM IST (Mon-Fri)
      *
      * Fetches all Nifty 100 stocks, applies a 2-factor filter, computes Gann Angle
      * levels for qualifying stocks, and stores them in GANN_ANGLE_LEVELS cache.
@@ -239,11 +239,11 @@ export class ScannerService implements OnModuleInit {
      *   1. rangePosition > 0.60 (CE) / < 0.40 (PE) — holding near day's high/low
      *   2. dayRangePct > 1.2%                       — meaningful intraday expansion
      */
-    @Cron('0 */5 9-11 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    @Cron('0 */5 9-12 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async automatedGannAngleScan() {
         const now = new Date();
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
-        if (timeStr < '09:20:00' || timeStr > '11:30:00') return;
+        if (timeStr < '09:20:00' || timeStr > '12:45:00') return;
 
         const config = await this.prisma.shoonyaConfig.findFirst();
         if (config && !config.gannAngleEnabled) {
@@ -256,12 +256,12 @@ export class ScannerService implements OnModuleInit {
             const momentumStocks: any[] = [];
 
             for (const stock of stocks) {
-                const ltp          = stock.ltp;
-                const prevClose    = stock.prevClose || ltp;
-                const dayHigh      = stock.dayHigh   || ltp;
-                const dayLow       = stock.dayLow    || ltp;
+                const ltp = stock.ltp;
+                const prevClose = stock.prevClose || ltp;
+                const dayHigh = stock.dayHigh || ltp;
+                const dayLow = stock.dayLow || ltp;
 
-                const dayRangePct   = prevClose > 0 ? ((dayHigh - dayLow) / prevClose) * 100 : 0;
+                const dayRangePct = prevClose > 0 ? ((dayHigh - dayLow) / prevClose) * 100 : 0;
                 const rangePosition = (dayHigh - dayLow) > 0 ? (ltp - dayLow) / (dayHigh - dayLow) : 0.5;
 
                 const isCeMomentum = rangePosition > 0.60 && dayRangePct > 1.2;
@@ -269,8 +269,8 @@ export class ScannerService implements OnModuleInit {
 
                 if (!isCeMomentum && !isPeMomentum) continue;
 
-                const type   = isCeMomentum ? 'CE' : 'PE';
-                const levels = this.gannAngleService.calculateAngles(prevClose);
+                const type = isCeMomentum ? 'CE' : 'PE';
+                const levels = this.gannAngleService.calculateAngles(prevClose, stock.openPrice);
                 momentumStocks.push({ symbol: stock.symbol, type, levels });
             }
 
@@ -282,17 +282,19 @@ export class ScannerService implements OnModuleInit {
     }
 
     /**
-     * Gann Angle Level Monitor — Runs every 30 seconds, 9:20–11:30 AM IST (Mon-Fri)
+     * Gann Angle Level Monitor — Runs every 30 seconds, 9:20–12:45 PM IST (Mon-Fri)
      *
-     * Reads the GANN_ANGLE_LEVELS cache and detects 1x1 angle crossings.
-     * Adds qualifying stocks to the watchlist for 1-min candle close confirmation.
+     * Reads the GANN_ANGLE_LEVELS cache and detects R_90 / S_90 angle crossings.
+     * Adds qualifying stocks to the watchlist for 5-min candle close confirmation.
+     * CE: triggers at R_90, target R_135, SL R_67.5. Rejects if LTP ≥ R_135 (too late).
+     * PE: triggers at S_90, target S_135, SL S_67.5. Rejects if LTP ≤ S_135 (too deep).
      */
     @Cron('*/30 * * * * *')
     async monitorGannAngleLevels() {
         if (!this.isMarketHours()) return;
         const now = new Date();
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
-        if (timeStr < '09:20:00' || timeStr > '11:30:00') return;
+        if (timeStr < '09:20:00' || timeStr > '12:45:00') return;
 
         const cached = await this.cacheManager.get<string>('GANN_ANGLE_LEVELS');
         if (!cached) return;
@@ -320,20 +322,30 @@ export class ScannerService implements OnModuleInit {
             const levels = item.levels;
 
             if (item.type === 'CE') {
-                if (ltp >= levels.angle1x1_Up) {
-                    await this.heartbeatService.addToWatchlist(
-                        item.symbol, levels.angle1x1_Up, 'CE',
-                        levels.angle1x2_Up, levels.angle2x1_Up, 'GANN_ANGLE'
-                    );
-                    this.logger.log(`📍 [Gann Angle] CE cross: [${item.symbol}] LTP ₹${ltp} at 1x1_Up ₹${levels.angle1x1_Up} → watchlist`);
+                if (ltp >= levels.R_90) {
+                    if (ltp >= levels.R_135) {
+                        // Upper band rejection: price already at/above target — risk too high
+                        this.logger.debug(`[Gann Angle] CE SKIP: [${item.symbol}] LTP ₹${ltp} ≥ R_135 ₹${levels.R_135} — upper band, risk too high`);
+                    } else {
+                        await this.heartbeatService.addToWatchlist(
+                            item.symbol, levels.R_90, 'CE',
+                            levels.R_135, levels.R_67_5, 'GANN_ANGLE'
+                        );
+                        this.logger.log(`📍 [Gann Angle] CE cross R_90: [${item.symbol}] LTP ₹${ltp} ≥ R_90 ₹${levels.R_90} → watchlist (T:₹${levels.R_135} SL:₹${levels.R_67_5})`);
+                    }
                 }
             } else {
-                if (ltp <= levels.angle1x1_Dn) {
-                    await this.heartbeatService.addToWatchlist(
-                        item.symbol, levels.angle1x1_Dn, 'PE',
-                        levels.angle1x2_Dn, levels.angle2x1_Dn, 'GANN_ANGLE'
-                    );
-                    this.logger.log(`📍 [Gann Angle] PE cross: [${item.symbol}] LTP ₹${ltp} at 1x1_Dn ₹${levels.angle1x1_Dn} → watchlist`);
+                if (ltp <= levels.S_90) {
+                    if (ltp <= levels.S_135) {
+                        // Lower band rejection: price already at/below target — risk too high
+                        this.logger.debug(`[Gann Angle] PE SKIP: [${item.symbol}] LTP ₹${ltp} ≤ S_135 ₹${levels.S_135} — lower band, risk too high`);
+                    } else {
+                        await this.heartbeatService.addToWatchlist(
+                            item.symbol, levels.S_90, 'PE',
+                            levels.S_135, levels.S_67_5, 'GANN_ANGLE'
+                        );
+                        this.logger.log(`📍 [Gann Angle] PE cross S_90: [${item.symbol}] LTP ₹${ltp} ≤ S_90 ₹${levels.S_90} → watchlist (T:₹${levels.S_135} SL:₹${levels.S_67_5})`);
+                    }
                 }
             }
         }
@@ -351,7 +363,7 @@ export class ScannerService implements OnModuleInit {
         if (timeStr < '09:15:00' || timeStr > '15:15:00') return;
 
         // Active session windows only — skip mid-day chop (11:30 AM – 1:30 PM)
-        const inMorningWindow   = timeStr >= '09:30:00' && timeStr <= '11:30:00';
+        const inMorningWindow = timeStr >= '09:30:00' && timeStr <= '11:30:00';
         const inAfternoonWindow = timeStr >= '13:30:00' && timeStr <= '15:15:00';
         if (!inMorningWindow && !inAfternoonWindow) {
             this.logger.debug(`5 EMA PE: Outside active windows (${timeStr}). Skipping.`);

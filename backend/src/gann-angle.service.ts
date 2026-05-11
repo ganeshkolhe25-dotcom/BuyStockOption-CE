@@ -1,13 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
 
 export interface GannAngleLevels {
-    previousClose: number;
-    angle1x2_Up: number;
-    angle1x1_Up: number;
-    angle2x1_Up: number;
-    angle2x1_Dn: number;
-    angle1x1_Dn: number;
-    angle1x2_Dn: number;
+    basePrice: number;   // prevClose or openPrice (if gap ≥1%)
+    R_22_5: number;
+    R_45:   number;
+    R_67_5: number;
+    R_90:   number;
+    R_135:  number;
+    S_22_5: number;
+    S_45:   number;
+    S_67_5: number;
+    S_90:   number;
+    S_135:  number;
 }
 
 @Injectable()
@@ -15,69 +19,72 @@ export class GannAngleService {
     private readonly logger = new Logger(GannAngleService.name);
 
     /**
-     * Calculate Gann Angles relative to a starting price (Prev Close)
-     * Using square root method: NewPrice = (sqrt(Price) +/- (Step * Time))^2
+     * Calculate Gann Angle levels using the degree-based square-root formula.
+     * R/S(deg) = (√basePrice ± deg/180)²
+     *
+     * CE Setup: Enter on R_90 cross, SL at R_67.5, Target at R_135
+     * PE Setup: Enter on S_90 cross, SL at S_67.5, Target at S_135
+     *
+     * Gap detection: if today's open gaps ≥1% above/below prevClose, use
+     * openPrice as the base so all levels shift to the actual day's anchor.
      */
-    calculateAngles(previousClose: number): GannAngleLevels {
-        const root = Math.sqrt(previousClose);
-        
-        // Step represents geometric degree rotations (0.25 = 90 degrees commonly used as intraday structural step)
-        const step = 0.25;
+    calculateAngles(prevClose: number, openPrice?: number): GannAngleLevels {
+        // Use openPrice as base if gap ≥ 1% up or down
+        let basePrice = prevClose;
+        if (openPrice && prevClose > 0) {
+            if (openPrice >= prevClose * 1.01 || openPrice <= prevClose * 0.99) {
+                basePrice = openPrice;
+            }
+        }
 
-        // In terms of price/time geometry:
-        // 1x1 = 1 unit price / 1 unit time
-        // 2x1 = 2 units price / 1 unit time 
-        // 1x2 = 1 unit price / 2 units time
+        const root = Math.sqrt(basePrice);
+        const calc = (deg: number, dir: 1 | -1) =>
+            parseFloat(Math.pow(root + dir * (deg / 180), 2).toFixed(2));
 
-        const calc = (factor: number) => parseFloat(Math.pow(root + factor, 2).toFixed(2));
-
-        const levels: GannAngleLevels = {
-            previousClose: previousClose,
-            angle1x2_Up: calc(step * 2),    // Sharpest upward angle
-            angle1x1_Up: calc(step * 1),    // Balanced upward angle (45 degrees)
-            angle2x1_Up: calc(step * 0.5),  // Shallower upward angle
-            
-            angle2x1_Dn: calc(-step * 0.5), // Shallower downward angle
-            angle1x1_Dn: calc(-step * 1),   // Balanced downward angle
-            angle1x2_Dn: calc(-step * 2),   // Sharpest downward angle
+        return {
+            basePrice,
+            R_22_5: calc(22.5,  1),
+            R_45:   calc(45,    1),
+            R_67_5: calc(67.5,  1),
+            R_90:   calc(90,    1),
+            R_135:  calc(135,   1),
+            S_22_5: calc(22.5, -1),
+            S_45:   calc(45,   -1),
+            S_67_5: calc(67.5, -1),
+            S_90:   calc(90,   -1),
+            S_135:  calc(135,  -1),
         };
-
-        return levels;
     }
 
-    /**
-     * Determine trend based on current LTP relative to 1x1 angle
-     */
+    /** Returns trend based on R_90 / S_90 structural levels */
     evaluateTrend(ltp: number, levels: GannAngleLevels) {
-        if (ltp > levels.angle1x1_Up) return 'BULLISH';
-        if (ltp < levels.angle1x1_Dn) return 'BEARISH';
+        if (ltp > levels.R_90) return 'BULLISH';
+        if (ltp < levels.S_90) return 'BEARISH';
         return 'NEUTRAL';
     }
 
-    /**
-     * Generate Actionable Breakdown or Breakout triggers
-     */
+    /** Generates entry signal: CE enters at R_90 with target R_135, SL R_67.5 */
     generateSignal(ltp: number, levels: GannAngleLevels) {
         const trend = this.evaluateTrend(ltp, levels);
-        
+
         if (trend === 'BULLISH') {
             return {
                 type: 'CE',
-                entryTrigger: levels.angle1x1_Up,
-                target: levels.angle1x2_Up,
-                sl: levels.angle2x1_Up,
+                entryTrigger: levels.R_90,
+                target: levels.R_135,
+                sl: levels.R_67_5,
                 status: 'Eligible for CE'
             };
         } else if (trend === 'BEARISH') {
             return {
                 type: 'PE',
-                entryTrigger: levels.angle1x1_Dn,
-                target: levels.angle1x2_Dn,
-                sl: levels.angle2x1_Dn,
+                entryTrigger: levels.S_90,
+                target: levels.S_135,
+                sl: levels.S_67_5,
                 status: 'Eligible for PE'
             };
         }
-        
+
         return { type: 'NONE', status: 'Waiting for Angle Breakout' };
     }
 }

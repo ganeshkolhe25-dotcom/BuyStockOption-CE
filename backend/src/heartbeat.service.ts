@@ -47,6 +47,8 @@ export class HeartbeatService {
     private pendingLimitOrders = new Map<string, PendingLimitOrder>();
     // 2-Candle: tokens where half-exit at 1:1 has already been done — remaining half is trailing
     private readonly cbHalfExited = new Set<string>();
+    // Gann Angle: tokens where partial booking at +5% premium has been done
+    private readonly gaHalfExited = new Set<string>();
 
     constructor(
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
@@ -200,14 +202,15 @@ export class HeartbeatService {
                 }
 
                 // CANDLE_BREAKOUT: execute immediately — self-confirming on candle close
-                // GANN_ANGLE / EMA_5: 1-minute sustain with 1-min candle close confirmation
+                // GANN_ANGLE: 5-minute sustain with 5-min candle close confirmation
+                // EMA_5: 3-minute sustain with live LTP confirmation
                 // GANN_9: 5-minute sustain with 5-min candle close confirmation
-                const sustainMs = isCandleBreakout ? 0 : (isGannAngle || isEma) ? 1 * 60 * 1000 : 5 * 60 * 1000;
+                const sustainMs = isCandleBreakout ? 0 : isEma ? 3 * 60 * 1000 : 5 * 60 * 1000;
                 const timeElapsedMs = Date.now() - entry.breakoutTime;
 
                 if (timeElapsedMs >= sustainMs) {
-                    if (!isSustaining && !isGann9 && !isGannAngle && !isEma) {
-                        const invalidMsg = `Signal Invalidated at 5-min check: LTP ₹${ltp} not sustaining ${entry.type} threshold ₹${sustainThreshold.toFixed(2)} (trigger ₹${entry.triggerPrice}).`;
+                    if (!isSustaining && !isGann9 && !isGannAngle) {
+                        const invalidMsg = `Signal Invalidated at ${Math.round(sustainMs/60000)}-min check: LTP ₹${ltp} not sustaining ${entry.type} threshold ₹${sustainThreshold.toFixed(2)} (trigger ₹${entry.triggerPrice}).`;
                         this.logger.warn(`❌ [${entry.symbol}] ${invalidMsg}`);
                         this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, invalidMsg, entry.strategyName);
                         await this.cacheManager.del(key);
@@ -251,13 +254,13 @@ export class HeartbeatService {
                     }
 
                     if (isGannAngle) {
-                        const candle = await this.getLastCompletedCandle(entry.symbol, '1');
+                        const candle = await this.getLastCompletedCandle(entry.symbol, '5');
                         if (candle !== null) {
                             const confirmedByCandle = entry.type === 'CE'
                                 ? candle.close >= entry.triggerPrice
                                 : candle.close <= entry.triggerPrice;
                             if (!confirmedByCandle) {
-                                const msg = `1-min candle close ₹${candle.close} did not confirm ${entry.type} trigger ₹${entry.triggerPrice.toFixed(2)}. Fake breakout — ignored.`;
+                                const msg = `5-min candle close ₹${candle.close} did not confirm ${entry.type} trigger ₹${entry.triggerPrice.toFixed(2)}. Fake breakout — ignored.`;
                                 this.logger.warn(`❌ [${entry.symbol}] ${msg}`);
                                 this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, msg, entry.strategyName);
                                 await this.cacheManager.del(key);
@@ -265,16 +268,16 @@ export class HeartbeatService {
                                 continue;
                             }
                             this.logger.log(
-                                `📊 [${entry.symbol}] GANN_ANGLE 1-MIN CANDLE CONFIRM: ` +
+                                `📊 [${entry.symbol}] GANN_ANGLE 5-MIN CANDLE CONFIRM: ` +
                                 `close ₹${candle.close} | high ₹${candle.high} | low ₹${candle.low} | ` +
                                 `trigger ₹${entry.triggerPrice.toFixed(2)}`
                             );
                         } else {
-                            this.logger.warn(`[${entry.symbol}] Could not fetch 1-min candle — proceeding with tick confirmation.`);
+                            this.logger.warn(`[${entry.symbol}] Could not fetch 5-min candle — proceeding with tick confirmation.`);
                         }
                     }
 
-                    const label = isCandleBreakout ? 'IMMEDIATE' : (isGannAngle || isEma) ? '1-MIN' : '5-MIN';
+                    const label = isCandleBreakout ? 'IMMEDIATE' : isGannAngle ? '5-MIN' : isEma ? '3-MIN' : '5-MIN';
                     const entryDistPct = isGann9
                         ? ((Math.abs(ltp - entry.triggerPrice) / entry.triggerPrice) * 100).toFixed(2)
                         : null;
@@ -654,18 +657,26 @@ export class HeartbeatService {
             }
         };
 
-        // ── Option premium stop (GANN_9 / GANN_ANGLE) ──────────────────────────
-        // Exit if bid falls to 60% of entry — stops all-day bleeding near SL.
-        if (pos.strategyName === 'GANN_9' || pos.strategyName === 'GANN_ANGLE') {
-            if (pos.entryPrice > 0 && currentBid <= pos.entryPrice * 0.60) {
-                if (this.closingTokens.has(pos.token)) { this.logger.debug(`[SKIP] Position already closing: ${pos.token}`); return; }
-                this.closingTokens.add(pos.token);
-                const reason = `OPTION PREMIUM STOP: bid ₹${currentBid} <= 60% of entry ₹${pos.entryPrice} (loss ${(((pos.entryPrice - currentBid) / pos.entryPrice) * 100).toFixed(1)}%). Exiting.`;
-                this.logger.warn(`🛑 [${pos.symbol}] ${reason}`);
-                this.logger.warn(`${exitPrefix} Immediate exit triggered for token: ${pos.token} — ${reason}`);
-                await this.paperTrading.closePosition(pos.token, currentBid, reason);
-                return;
-            }
+        // ── Option premium stop ──────────────────────────────────────────────────
+        // GANN_9: exit at 60% of entry (wide stop for structural breakout trades)
+        // GANN_ANGLE: exit at 95% of entry (tight 5% stop — matches Nirwana strategy)
+        if (pos.strategyName === 'GANN_9' && pos.entryPrice > 0 && currentBid <= pos.entryPrice * 0.60) {
+            if (this.closingTokens.has(pos.token)) { this.logger.debug(`[SKIP] Position already closing: ${pos.token}`); return; }
+            this.closingTokens.add(pos.token);
+            const reason = `OPTION PREMIUM STOP: bid ₹${currentBid} <= 60% of entry ₹${pos.entryPrice} (loss ${(((pos.entryPrice - currentBid) / pos.entryPrice) * 100).toFixed(1)}%). Exiting.`;
+            this.logger.warn(`🛑 [${pos.symbol}] ${reason}`);
+            this.logger.warn(`${exitPrefix} Immediate exit triggered for token: ${pos.token} — ${reason}`);
+            await this.paperTrading.closePosition(pos.token, currentBid, reason);
+            return;
+        }
+        if (pos.strategyName === 'GANN_ANGLE' && pos.entryPrice > 0 && currentBid <= pos.entryPrice * 0.95) {
+            if (this.closingTokens.has(pos.token)) { this.logger.debug(`[SKIP] Position already closing: ${pos.token}`); return; }
+            this.closingTokens.add(pos.token);
+            const reason = `OPTION PREMIUM STOP: bid ₹${currentBid} <= 95% of entry ₹${pos.entryPrice} (loss ${(((pos.entryPrice - currentBid) / pos.entryPrice) * 100).toFixed(1)}%). Exiting.`;
+            this.logger.warn(`🛑 [${pos.symbol}] ${reason}`);
+            this.logger.warn(`${exitPrefix} Immediate exit triggered for token: ${pos.token} — ${reason}`);
+            await this.paperTrading.closePosition(pos.token, currentBid, reason);
+            return;
         }
 
         // ── EMA_5: consume touch-exit flag set by scanner on candle close ───────
@@ -738,6 +749,23 @@ export class HeartbeatService {
                     if (shouldUpdate) {
                         this.logger.log(`📈 2-CANDLE TRAIL: [${pos.symbol}] ${pos.type} SL ₹${pos.slPrice} → ₹${newTrailSL} (underlying ₹${ltp})`);
                         this.paperTrading.updatePositionSL(pos.token, newTrailSL);
+                    }
+                }
+            }
+
+            // GANN_ANGLE: partial booking at +5% option premium — book half, move spot SL to current LTP
+            if (pos.strategyName === 'GANN_ANGLE' && !this.gaHalfExited.has(pos.token)) {
+                if (pos.entryPrice > 0 && currentBid >= pos.entryPrice * 1.05) {
+                    const halfQty = Math.floor(pos.qty / 2);
+                    if (halfQty > 0) {
+                        const newSpotSL = parseFloat(ltp.toFixed(2));
+                        await this.paperTrading.partialClosePosition(pos.token, halfQty, currentBid, '5% premium gain');
+                        this.paperTrading.updatePositionSL(pos.token, newSpotSL);
+                        this.gaHalfExited.add(pos.token);
+                        this.logger.log(
+                            `✂️  GANN_ANGLE HALF EXIT: [${pos.symbol}] ${pos.type} 5% premium hit @ ₹${currentBid.toFixed(2)}. ` +
+                            `Closed ${halfQty} lots @ ₹${currentBid.toFixed(2)}. Spot SL → ₹${newSpotSL}. Holding ${pos.qty - halfQty} lots.`
+                        );
                     }
                 }
             }
