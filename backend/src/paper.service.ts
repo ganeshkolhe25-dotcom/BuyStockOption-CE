@@ -327,19 +327,18 @@ export class PaperTradingService implements OnModuleInit {
     /**
      * Helper to get list of unique symbols traded today
      */
-    async getTodayTradedSymbols(strategyName?: string): Promise<string[]> {
+    async getTodayTradedSymbols(strategyName?: string, type?: 'CE' | 'PE'): Promise<string[]> {
         const startOfDay = new Date();
         startOfDay.setHours(0, 0, 0, 0);
 
         const filter: any = {
             entryTime: { gte: startOfDay },
             isPaperTrade: true,
-            token: { not: 'FAILED' }, // exclude old junk records
+            token: { not: 'FAILED' },
         };
 
-        if (strategyName) {
-            filter.strategyName = strategyName;
-        }
+        if (strategyName) filter.strategyName = strategyName;
+        if (type)         filter.type = type;
 
         const trades = await this.prisma.tradeHistory.findMany({
             where: filter,

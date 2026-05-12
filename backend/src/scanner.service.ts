@@ -243,7 +243,7 @@ export class ScannerService implements OnModuleInit {
     async automatedGannAngleScan() {
         const now = new Date();
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
-        if (timeStr < '09:30:00' || timeStr > '12:45:00') return;
+        if (timeStr < '09:30:00' || timeStr > '13:00:00') return;
 
         const config = await this.prisma.shoonyaConfig.findFirst();
         if (config && !config.gannAngleEnabled) {
@@ -251,7 +251,9 @@ export class ScannerService implements OnModuleInit {
             return;
         }
 
-        const todayTraded = await this.paperTrading.getTodayTradedSymbols('GANN_ANGLE');
+        // CE and PE tracked independently — a CE trade does NOT block a later PE signal
+        const tradedCE = await this.paperTrading.getTodayTradedSymbols('GANN_ANGLE', 'CE');
+        const tradedPE = await this.paperTrading.getTodayTradedSymbols('GANN_ANGLE', 'PE');
 
         let triggered = 0;
         let checked = 0;
@@ -262,7 +264,9 @@ export class ScannerService implements OnModuleInit {
             const quoteMap = new Map(quotes.map(q => [q.symbol, q]));
 
             for (const symbol of GANN_ANGLE_UNIVERSE) {
-                if (todayTraded.includes(symbol)) continue;
+                const ceBocked = tradedCE.includes(symbol);
+                const peBlocked = tradedPE.includes(symbol);
+                if (ceBocked && peBlocked) continue; // both directions done for today
 
                 // Skip if already in the 3-min confirmation queue
                 const inQueue = await this.cacheManager.get(`WATCHLIST:${symbol}`);
@@ -274,11 +278,12 @@ export class ScannerService implements OnModuleInit {
                 // Compute Gann levels for this stock
                 const levels = this.gannAngleService.calculateAngles(q.prevClose, q.openPrice);
                 const entryInfo = this.gannAngleService.getEntryLevels(symbol, levels, 'CE');
-                const triggerR  = entryInfo.triggerLevel;    // R_90 (or R_45)
-                const upperBand = entryInfo.targetLevel;     // R_135 (or R_90) — rejection band
+                const triggerR  = entryInfo.triggerLevel;
+                const upperBand = entryInfo.targetLevel;
 
-                const triggerS  = this.gannAngleService.getEntryLevels(symbol, levels, 'PE').triggerLevel;
-                const lowerBand = this.gannAngleService.getEntryLevels(symbol, levels, 'PE').targetLevel;
+                const peInfo    = this.gannAngleService.getEntryLevels(symbol, levels, 'PE');
+                const triggerS  = peInfo.triggerLevel;
+                const lowerBand = peInfo.targetLevel;
 
                 // Fetch last completed 5-min candle close
                 const candleClose = await this.nseService.getLastCandleClose(symbol, '5');
@@ -286,19 +291,19 @@ export class ScannerService implements OnModuleInit {
                 if (!candleClose) continue;
 
                 // CE trigger: 5-min close crossed above trigger angle, below upper band
-                if (candleClose > triggerR && candleClose < upperBand) {
-                    // Pass 0 for target/SL — computed from option premium at execution time
+                if (!ceBocked && candleClose > triggerR && candleClose < upperBand) {
                     await this.heartbeatService.addToWatchlist(symbol, triggerR, 'CE', 0, 0, 'GANN_ANGLE');
                     this.logger.log(
                         `📈 [Gann Angle] CE: [${symbol}] 5m close ₹${candleClose} > R_${entryInfo.angle} ₹${triggerR.toFixed(2)} → 3-min confirmation`
                     );
                     triggered++;
                 }
-                // PE trigger: 5-min close crossed below trigger angle, above lower band
-                else if (candleClose < triggerS && candleClose > lowerBand) {
+
+                // PE trigger: independent check — a CE trade earlier today does NOT block this
+                if (!peBlocked && candleClose < triggerS && candleClose > lowerBand) {
                     await this.heartbeatService.addToWatchlist(symbol, triggerS, 'PE', 0, 0, 'GANN_ANGLE');
                     this.logger.log(
-                        `📉 [Gann Angle] PE: [${symbol}] 5m close ₹${candleClose} < S_${entryInfo.angle} ₹${triggerS.toFixed(2)} → 3-min confirmation`
+                        `📉 [Gann Angle] PE: [${symbol}] 5m close ₹${candleClose} < S_${peInfo.angle} ₹${triggerS.toFixed(2)} → 3-min confirmation`
                     );
                     triggered++;
                 }
