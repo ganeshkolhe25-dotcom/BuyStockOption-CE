@@ -264,9 +264,9 @@ export class ScannerService implements OnModuleInit {
             const quoteMap = new Map(quotes.map(q => [q.symbol, q]));
 
             for (const symbol of GANN_ANGLE_UNIVERSE) {
-                const ceBocked = tradedCE.includes(symbol);
+                const ceBlocked = tradedCE.includes(symbol);
                 const peBlocked = tradedPE.includes(symbol);
-                if (ceBocked && peBlocked) continue; // both directions done for today
+                if (ceBlocked && peBlocked) continue; // both directions done for today
 
                 // Skip if already in the 3-min confirmation queue
                 const inQueue = await this.cacheManager.get(`WATCHLIST:${symbol}`);
@@ -291,7 +291,7 @@ export class ScannerService implements OnModuleInit {
                 if (!candleClose) continue;
 
                 // CE trigger: 5-min close crossed above trigger angle, below upper band
-                if (!ceBocked && candleClose > triggerR && candleClose < upperBand) {
+                if (!ceBlocked && candleClose > triggerR && candleClose < upperBand) {
                     await this.heartbeatService.addToWatchlist(symbol, triggerR, 'CE', 0, 0, 'GANN_ANGLE');
                     this.logger.log(
                         `📈 [Gann Angle] CE: [${symbol}] 5m close ₹${candleClose} > R_${entryInfo.angle} ₹${triggerR.toFixed(2)} → 3-min confirmation`
