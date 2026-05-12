@@ -5,6 +5,7 @@ import type { Cache } from 'cache-manager';
 import { NseService } from './nse.service';
 import { ShoonyaService } from './shoonya.service';
 import { PaperTradingService, PaperPosition } from './paper.service';
+import { PriceGatewayService, PositionPriceUpdate } from './price-gateway.service';
 
 
 export interface WatchlistEntry {
@@ -56,7 +57,8 @@ export class HeartbeatService {
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
         private readonly nseService: NseService,
         private readonly shoonyaService: ShoonyaService,
-        private readonly paperTrading: PaperTradingService
+        private readonly paperTrading: PaperTradingService,
+        private readonly priceGateway: PriceGatewayService,
     ) {
         this.logger.log('Sustain Engine Initialized. Heartbeat Worker waiting...');
         // Register WS-driven exit callback. Fires on every NFO tick; we schedule the
@@ -132,6 +134,36 @@ export class HeartbeatService {
         }
 
         this.logger.log(`🚨 BREAKOUT DETECTED: [${symbol}] crossed ${type} trigger ₹${triggerPrice}. Added to 5-Min Sustain Watchlist!`);
+    }
+
+    /**
+     * 2-Candle breakout buy — bypasses the 30-second watchlist cron for instant execution.
+     * Called directly from the 5-second runCandleBreakoutCheck cron in scanner.service.ts.
+     * Applies the same open-position and pending-order duplicate guards as addToWatchlist.
+     */
+    async executeCandleBreakoutDirectly(
+        symbol: string,
+        ltp: number,
+        type: 'CE' | 'PE',
+        targetPrice: number,
+        slPrice: number,
+        triggerPrice: number
+    ): Promise<void> {
+        const openPositions = await this.paperTrading.getPositions();
+        if (openPositions.some(p => p.symbol === symbol && p.strategyName === 'CANDLE_BREAKOUT')) {
+            this.logger.log(`BLOCKED [Conflict]: [${symbol}] already has an open CANDLE_BREAKOUT position — skipping.`);
+            return;
+        }
+
+        const hasPendingBuy = Array.from(this.pendingLimitOrders.values())
+            .some(o => o.symbol === symbol && o.orderType === 'BUY' && o.strategyName === 'CANDLE_BREAKOUT');
+        if (hasPendingBuy) {
+            this.logger.log(`BLOCKED [Conflict]: [${symbol}] pending CANDLE_BREAKOUT limit buy already in-flight — skipping.`);
+            return;
+        }
+
+        this.logger.log(`🚀 IMMEDIATE [2-CANDLE] SIGNAL: [${symbol}] LTP ₹${ltp} crossed trigger ₹${triggerPrice}. Executing ${type} entry now.`);
+        await this.executeOptionTrade(symbol, ltp, type, targetPrice, slPrice, 'CANDLE_BREAKOUT', triggerPrice);
     }
 
     /**
@@ -351,33 +383,22 @@ export class HeartbeatService {
                 return;
             }
 
-            // GANN_ANGLE / CANDLE_BREAKOUT: place a limit buy order at mid price (bid+ask)/2
+            // GANN_ANGLE: place a limit buy order at mid price (bid+ask)/2
             // Actual fill is checked every 15s for up to 2 minutes, then discarded if unfilled
-            if (strategyName === 'GANN_ANGLE' || strategyName === 'CANDLE_BREAKOUT') {
+            if (strategyName === 'GANN_ANGLE') {
                 const midPrice = parseFloat(((optionPremiumInfo.bidPrice + optionPremiumInfo.askPrice) / 2).toFixed(2));
-                let tradeQty = contract.lotSize;
-                if (strategyName === 'CANDLE_BREAKOUT') {
-                    const cfg = await this.shoonyaService.getConfig();
-                    const lotMultiplier = symbol === 'NIFTY'
-                        ? (cfg.candleNiftyLots || 1)
-                        : (cfg.candleBankNiftyLots || 1);
-                    tradeQty = contract.lotSize * lotMultiplier;
-                    // For CANDLE_BREAKOUT, user explicitly configured lot count → capital check
-                    // in paper.service.placeBuyOrder() is the real guard. Skip per-lot cap here.
-                } else {
-                    const lotValue = tradeQty * midPrice;
-                    if (lotValue > 40000) {
-                        const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Mid: ₹${midPrice}, Qty: ${tradeQty})`;
-                        this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
-                        this.logger.warn(failMsg);
-                        return;
-                    }
+                const lotValue = contract.lotSize * midPrice;
+                if (lotValue > 40000) {
+                    const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Mid: ₹${midPrice}, Qty: ${contract.lotSize})`;
+                    this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
+                    this.logger.warn(failMsg);
+                    return;
                 }
                 const orderKey = `BUY:${contract.token}`;
                 if (!this.pendingLimitOrders.has(orderKey)) {
                     this.pendingLimitOrders.set(orderKey, {
                         symbol, token: contract.token, tradingSymbol: contract.tradingSymbol,
-                        type, qty: tradeQty, midPrice, orderType: 'BUY',
+                        type, qty: contract.lotSize, midPrice, orderType: 'BUY',
                         placedAt: Date.now(), targetPrice, slPrice, strategyName
                     });
                     this.logger.log(`📋 GANN_ANGLE LIMIT BUY: [${symbol}] ${type} at mid ₹${midPrice} (bid ₹${optionPremiumInfo.bidPrice} / ask ₹${optionPremiumInfo.askPrice}). 2-min fill window.`);
@@ -445,10 +466,21 @@ export class HeartbeatService {
                 );
             }
 
+            // CANDLE_BREAKOUT: apply lot multiplier from config (NIFTY/BANKNIFTY configured independently)
+            // All other strategies use contract.lotSize directly (1 lot)
+            let tradeQty = contract.lotSize;
+            if (strategyName === 'CANDLE_BREAKOUT') {
+                const cfg = await this.shoonyaService.getConfig();
+                const lotMultiplier = symbol === 'NIFTY'
+                    ? (cfg.candleNiftyLots || 1)
+                    : (cfg.candleBankNiftyLots || 1);
+                tradeQty = contract.lotSize * lotMultiplier;
+            }
+
             // 🛑 Lot Price Constraint: Total Investment (Qty * Price) must be <= 40,000
-            const lotValue = contract.lotSize * optionPremiumInfo.askPrice;
+            const lotValue = tradeQty * optionPremiumInfo.askPrice;
             if (lotValue > 40000) {
-                const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Price: ₹${optionPremiumInfo.askPrice}, Qty: ${contract.lotSize})`;
+                const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Price: ₹${optionPremiumInfo.askPrice}, Qty: ${tradeQty})`;
                 this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
                 this.logger.warn(failMsg);
                 return;
@@ -459,7 +491,7 @@ export class HeartbeatService {
                 contract.token,
                 contract.tradingSymbol,
                 type,
-                contract.lotSize,
+                tradeQty,
                 optionPremiumInfo.askPrice,
                 targetPrice,
                 slPrice,
@@ -897,6 +929,8 @@ export class HeartbeatService {
         const positions = summary.positions;
         if (positions.length === 0) return;
 
+        const priceUpdates: PositionPriceUpdate[] = [];
+
         for (const pos of positions) {
             if (this.closingTokens.has(pos.token)) {
                 this.logger.debug(`[SKIP] Position already closing: ${pos.token}`);
@@ -926,7 +960,12 @@ export class HeartbeatService {
                 }
             }
 
+            priceUpdates.push({ token: pos.token, ltp: currentBid, pnl: (currentBid - pos.entryPrice) * pos.qty });
             await this.evaluateExitForPosition(pos, currentBid, optionInfo, 'CRON');
+        }
+
+        if (this.priceGateway.hasClients()) {
+            this.priceGateway.emitPositionPrices(priceUpdates);
         }
     }
 

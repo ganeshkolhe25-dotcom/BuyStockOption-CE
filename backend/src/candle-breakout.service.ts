@@ -87,7 +87,7 @@ export class CandleBreakoutService {
      */
     checkBreakouts(ltpMap: Record<string, number>): CandleSetup[] {
         const triggered: CandleSetup[] = [];
-        const BUFFER = 5; // fixed 5-point buffer
+        const BUFFER = 1; // 1-point noise filter — just enough to avoid phantom ticks
 
         for (const [symbol, setup] of this.setups) {
             if (setup.signal !== 'PENDING') continue;
@@ -104,7 +104,7 @@ export class CandleBreakoutService {
                 setup.entrySlPrice = parseFloat(setup.rangeLow.toFixed(2));
                 triggered.push(setup);
                 this.logger.log(
-                    `📈 2-CANDLE CE: [${symbol}] LTP ₹${ltp} > high ₹${setup.rangeHigh.toFixed(2)} + 5pt ` +
+                    `📈 2-CANDLE CE: [${symbol}] LTP ₹${ltp} > high ₹${setup.rangeHigh.toFixed(2)} + 1pt ` +
                     `→ entry ₹${entryPrice} | Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
                 );
             } else if (ltp < setup.rangeLow - BUFFER) {
@@ -117,7 +117,7 @@ export class CandleBreakoutService {
                 setup.entrySlPrice = parseFloat(setup.rangeHigh.toFixed(2));
                 triggered.push(setup);
                 this.logger.log(
-                    `📉 2-CANDLE PE: [${symbol}] LTP ₹${ltp} < low ₹${setup.rangeLow.toFixed(2)} - 5pt ` +
+                    `📉 2-CANDLE PE: [${symbol}] LTP ₹${ltp} < low ₹${setup.rangeLow.toFixed(2)} - 1pt ` +
                     `→ entry ₹${entryPrice} | Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
                 );
             }

@@ -22,7 +22,8 @@ RUN npm install
 
 COPY . .
 
-RUN npm run build
+# Always force a full TypeScript compile — prevents incremental cache from serving stale dist/
+RUN rm -rf dist && npm run build
 
 EXPOSE 8080
 

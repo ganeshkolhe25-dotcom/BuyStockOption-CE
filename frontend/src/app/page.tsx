@@ -358,7 +358,32 @@ export default function Home() {
     // Setup 10-second polling for live updates
     const intervalId = setInterval(fetchScan, 10000);
 
-    return () => clearInterval(intervalId);
+    // WebSocket for live position price push (~1s granularity)
+    const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+    const wsProtocol = API_URL.startsWith('https') ? 'wss' : 'ws';
+    const ws = new WebSocket(API_URL.replace(/^https?/, wsProtocol) + '/ws');
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data as string);
+        if (msg.type === 'position_prices' && Array.isArray(msg.data)) {
+          setPortfolio((prev: any) => ({
+            ...prev,
+            positions: prev.positions.map((p: any) => {
+              const upd = msg.data.find((u: any) => u.token === p.token);
+              return upd ? { ...p, currentLtp: upd.ltp } : p;
+            })
+          }));
+        }
+      } catch {
+        // ignore malformed messages
+      }
+    };
+    ws.onerror = () => { /* silently fail — 10s polling is the fallback */ };
+
+    return () => {
+      clearInterval(intervalId);
+      ws.close();
+    };
   }, [isAuthenticated]);
 
   const handleLogin = (e: React.FormEvent<HTMLFormElement>) => {

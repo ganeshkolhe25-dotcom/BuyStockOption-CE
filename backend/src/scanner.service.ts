@@ -566,13 +566,13 @@ export class ScannerService implements OnModuleInit {
     }
 
     /**
-     * Phase 2 — breakout check (every 15 seconds, 9:18–9:45 AM IST, Mon-Fri).
+     * Phase 2 — breakout check (every 5 seconds, 9:18–9:45 AM IST, Mon-Fri).
      * Runs only when at least one PENDING setup exists.
      * Fetches live NIFTY/BANKNIFTY LTP via REST and fires trade if:
-     *   LTP > rangeHigh + 5 → CE entry at rangeHigh + 5
-     *   LTP < rangeLow  - 5 → PE entry at rangeLow  - 5
+     *   LTP > rangeHigh + 1 → CE entry (direct buy, no watchlist delay)
+     *   LTP < rangeLow  - 1 → PE entry (direct buy, no watchlist delay)
      */
-    @Cron('*/15 * * * * 1-5', { timeZone: 'Asia/Kolkata' })
+    @Cron('*/5 * * * * 1-5', { timeZone: 'Asia/Kolkata' })
     async runCandleBreakoutCheck() {
         const timeStr = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
         if (timeStr < '09:18:00' || timeStr > '09:45:00') return;
@@ -589,13 +589,14 @@ export class ScannerService implements OnModuleInit {
                 const todayTraded = await this.paperTrading.getTodayTradedSymbols('CANDLE_BREAKOUT');
                 if (todayTraded.includes(setup.symbol)) continue;
 
-                await this.heartbeatService.addToWatchlist(
+                const ltp = ltpMap[setup.symbol] ?? setup.breakoutPrice!;
+                await this.heartbeatService.executeCandleBreakoutDirectly(
                     setup.symbol,
-                    setup.breakoutPrice!,
+                    ltp,
                     setup.signal as 'CE' | 'PE',
                     setup.entryTargetPrice!,
                     setup.entrySlPrice!,
-                    'CANDLE_BREAKOUT',
+                    setup.breakoutPrice!,
                 );
             } catch (err: any) {
                 this.logger.error(`[2-Candle] Trade execution failed for ${setup.symbol}: ${err.message}`);
