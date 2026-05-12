@@ -570,7 +570,14 @@ export class ShoonyaService implements OnModuleInit {
             'COLPAL': 10,
             'GODREJCP': 10,
             'BRITANNIA': 50,
-            'HDFCLIFE': 10
+            'HDFCLIFE': 10,
+            // Nirwana GANN_ANGLE universe additions
+            'MUTHOOTFIN': 50, 'ASTRAL': 50, 'CHOLAFIN': 20, 'SUPREMEIND': 100,
+            'COFORGE': 50, 'PRESTIGE': 20, 'TVSMOTOR': 50, 'PIDILITIND': 50,
+            'CGPOWER': 20, 'ADANIGREEN': 20, 'MANKIND': 20, 'POLICYBZR': 20,
+            'HDFCAMC': 100, 'ALKEM': 100, 'LUPIN': 10, 'GLENMARK': 20,
+            'MFSL': 10, 'SOLARINDS': 100, 'TIINDIA': 50, 'OFSS': 100,
+            'LTIM': 50, 'TATAPOWER': 10, 'GRASIM': 20,
         };
 
         let step = NSE_STOCK_STEPS[symbol];
@@ -666,7 +673,7 @@ export class ShoonyaService implements OnModuleInit {
     /**
      * Fetch Live Option Premium (LTP) by Exchange Token from Shoonya
      */
-    async getOptionQuote(token: string): Promise<{ ltp: number, askPrice: number, bidPrice: number } | null> {
+    async getOptionQuote(token: string): Promise<{ ltp: number, askPrice: number, bidPrice: number, volume: number } | null> {
         // If it's a Dummy Token, fallback mathematically
         if (token.includes('Dummy') || isNaN(Number(token))) return null;
 
@@ -698,9 +705,10 @@ export class ShoonyaService implements OnModuleInit {
                     const bestSellPrice = response.data.sp1 ? parseFloat(response.data.sp1) : parseFloat(response.data.lp);
                     const bestBuyPrice = response.data.bp1 ? parseFloat(response.data.bp1) : parseFloat(response.data.lp);
                     return {
-                        ltp: parseFloat(response.data.lp),
+                        ltp:      parseFloat(response.data.lp),
                         askPrice: bestSellPrice > 0 ? bestSellPrice : parseFloat(response.data.lp),
-                        bidPrice: bestBuyPrice > 0 ? bestBuyPrice : parseFloat(response.data.lp)
+                        bidPrice: bestBuyPrice  > 0 ? bestBuyPrice  : parseFloat(response.data.lp),
+                        volume:   response.data.v ? parseInt(response.data.v, 10) : 0,
                     };
                 }
 
@@ -713,6 +721,111 @@ export class ShoonyaService implements OnModuleInit {
             }
         }
         return null;
+    }
+
+    /**
+     * Find the best ITM option for GANN_ANGLE by comparing volume of top 2 ITM candidates.
+     * Mirrors Nirwana's evaluate_3m_confirmation: get_itm_option_candidates(count=2) → pick highest volume.
+     * Falls back to single preferITM search if the volume comparison fails.
+     */
+    async findTopItmOptionByVolume(symbol: string, triggerPrice: number, type: 'CE' | 'PE'): Promise<OptionContract | null> {
+        const config = await this.getConfig();
+        const date = new Date();
+        const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+        let targetMonth = config.expiryMonth;
+        if (!targetMonth || targetMonth === 'AUTO') {
+            if (date.getDate() >= 24) date.setMonth(date.getMonth() + 1);
+            targetMonth = monthNames[date.getMonth()];
+        }
+
+        // Reuse same step table as findAtmOption
+        const NSE_STOCK_STEPS: Record<string, number> = {
+            'NIFTY': 50, 'BANKNIFTY': 100, 'TITAN': 20, 'LT': 20, 'VOLTAS': 20,
+            'RELIANCE': 20, 'INFY': 20, 'TCS': 50, 'ADANIENT': 20, 'ADANIPORTS': 20,
+            'M&M': 20, 'HDFCBANK': 10, 'ICICIBANK': 10, 'SBIN': 5, 'TATASTEEL': 2.5,
+            'ITC': 2.5, 'DIXON': 100, 'MARUTI': 100, 'BAJFINANCE': 100, 'DRREDDY': 50,
+            'ULTRACEMCO': 100, 'INDIGO': 50, 'HAL': 50, 'BOSCHLTD': 500, 'MRF': 500,
+            'PAGEIND': 500, 'ABB': 100, 'SIEMENS': 50, 'TRENT': 50, 'BAJAJ-AUTO': 50,
+            'EICHERMOT': 50, 'APOLLOHOSP': 50, 'HEROMOTOCO': 50, 'DIVISLAB': 50,
+            'ASIANPAINT': 20, 'HINDALCO': 5, 'JSWSTEEL': 10, 'SUNPHARMA': 10,
+            'CIPLA': 10, 'BHARTIARTL': 10, 'BAJAJFINSV': 50, 'KOTAKBANK': 20,
+            'HCLTECH': 20, 'WIPRO': 5, 'ONGC': 5, 'NTPC': 5, 'COALINDIA': 5,
+            'POWERGRID': 5, 'COLPAL': 10, 'GODREJCP': 10, 'BRITANNIA': 50, 'HDFCLIFE': 10,
+            // New Nirwana universe stocks
+            'MUTHOOTFIN': 50, 'ASTRAL': 50, 'CHOLAFIN': 20, 'SUPREMEIND': 100,
+            'COFORGE': 50, 'PRESTIGE': 20, 'TVSMOTOR': 50, 'PIDILITIND': 50,
+            'CGPOWER': 20, 'ADANIGREEN': 20, 'MANKIND': 20, 'POLICYBZR': 20,
+            'HDFCAMC': 100, 'ALKEM': 100, 'LUPIN': 10, 'GLENMARK': 20,
+            'MFSL': 10, 'SOLARINDS': 100, 'TIINDIA': 50, 'OFSS': 100,
+            'LTIM': 50, 'TATAPOWER': 10, 'GRASIM': 20,
+        };
+
+        let step = NSE_STOCK_STEPS[symbol];
+        if (!step) {
+            if (triggerPrice > 10000)     step = 100;
+            else if (triggerPrice > 5000) step = 50;
+            else if (triggerPrice > 2000) step = 20;
+            else if (triggerPrice > 500)  step = 10;
+            else if (triggerPrice > 200)  step = 5;
+            else                          step = 2.5;
+        }
+
+        // Build 2 ITM candidate strikes
+        const strikes: number[] = [];
+        if (type === 'CE') {
+            const s1 = Math.ceil(triggerPrice / step) * step - step;
+            strikes.push(s1, s1 - step);
+        } else {
+            const s1 = Math.floor(triggerPrice / step) * step + step;
+            strikes.push(s1, s1 + step);
+        }
+
+        let bestContract: OptionContract | null = null;
+        let bestVolume = -1;
+
+        for (const strike of strikes) {
+            const searchQuery = `${symbol} ${strike}`;
+            try {
+                if (!this.sessionToken) await this.authenticate();
+                const jData = { uid: config.uid, stext: searchQuery, exch: 'NFO' };
+                const payload = `jData=${JSON.stringify(jData).replace(/&/g, '\\u0026')}&jKey=${this.sessionToken}`;
+                const res = await axios.post(`${this.endpoint}/SearchScrip`, payload, {
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    timeout: 8000,
+                });
+
+                if (res.data.stat === 'Ok' && res.data.values?.length > 0) {
+                    const strikeStr = String(strike);
+                    const match = res.data.values.find((v: any) => {
+                        const t = (v.tsym || '').toUpperCase();
+                        return t.includes(targetMonth.toUpperCase()) && t.includes(strikeStr) &&
+                            (type === 'CE' ? (t.endsWith('CE') || t.includes('C' + strikeStr)) : (t.endsWith('PE') || t.includes('P' + strikeStr)));
+                    });
+
+                    if (match) {
+                        const quote = await this.getOptionQuote(match.token);
+                        const vol = quote?.volume ?? 0;
+                        if (vol > bestVolume) {
+                            bestVolume = vol;
+                            bestContract = {
+                                strike,
+                                type,
+                                symbol,
+                                token: match.token,
+                                tradingSymbol: match.tsym,
+                                ltp: quote?.ltp ?? 0,
+                                delta: type === 'CE' ? 0.52 : -0.48,
+                                lotSize: parseInt(match.ls) || 500,
+                            };
+                        }
+                    }
+                }
+            } catch { /* fall through to next candidate */ }
+            await new Promise(res => setTimeout(res, 200)); // brief throttle
+        }
+
+        // Fall back to standard ITM search if volume comparison failed
+        return bestContract ?? (await this.findAtmOption(symbol, triggerPrice, type, true));
     }
 
     /**

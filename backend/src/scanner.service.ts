@@ -2,7 +2,7 @@ import { Injectable, Logger, Inject, OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { CACHE_MANAGER } from '@nestjs/cache-manager';
 import type { Cache } from 'cache-manager';
-import { NseService } from './nse.service';
+import { NseService, GANN_ANGLE_UNIVERSE } from './nse.service';
 import { GannService } from './gann.service';
 import { GannAngleService } from './gann-angle.service';
 import { Ema5Service } from './ema5.service';
@@ -228,18 +228,18 @@ export class ScannerService implements OnModuleInit {
     }
 
     /**
-     * Gann Angle Momentum Cache Builder — Runs every 5 minutes, 9:30–12:45 PM IST (Mon-Fri)
+     * Gann Angle 5-min Candle Close Scanner — Nirwana-aligned.
+     * Runs every 5 minutes at 9:30–12:45 PM IST (Mon-Fri).
      *
-     * Fetches all Nifty 100 stocks, applies a 2-factor filter, computes Gann Angle
-     * levels for qualifying stocks, and stores them in GANN_ANGLE_LEVELS cache.
-     * The separate 30-second monitorGannAngleLevels cron reads this cache and detects
-     * angle crossings.
-     *
-     * Filter (derived from the single getMultiQuotes batch call):
-     *   1. rangePosition > 0.60 (CE) / < 0.40 (PE) — holding near day's high/low
-     *   2. dayRangePct > 1.2%                       — meaningful intraday expansion
+     * For each of the 51 Nirwana stocks:
+     *   1. Fetch last completed 5-min candle close.
+     *   2. Compute Gann levels (prevClose / openPrice gap-adjusted).
+     *   3. CE: candle close > R_90 (and < R_135 — upper band rejection) → 3-min confirmation queue.
+     *      PE: candle close < S_90 (and > S_135) → 3-min confirmation queue.
+     * No LTP-based pre-filter. No rangePosition / dayRangePct filter.
+     * Target and SL are NOT passed here — they are computed from option premium at execution.
      */
-    @Cron('0 */5 9-12 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    @Cron('5 */5 9-12 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async automatedGannAngleScan() {
         const now = new Date();
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
@@ -247,107 +247,69 @@ export class ScannerService implements OnModuleInit {
 
         const config = await this.prisma.shoonyaConfig.findFirst();
         if (config && !config.gannAngleEnabled) {
-            this.logger.warn('Gann Angle Strategy is DISABLED from settings. Skipping levels cache build...');
+            this.logger.warn('Gann Angle Strategy is DISABLED. Skipping 5-min candle scan.');
             return;
         }
 
-        try {
-            const stocks = await this.nseService.scanNifty100Quotes();
-            const momentumStocks: any[] = [];
-
-            for (const stock of stocks) {
-                const ltp = stock.ltp;
-                const prevClose = stock.prevClose || ltp;
-                const dayHigh = stock.dayHigh || ltp;
-                const dayLow = stock.dayLow || ltp;
-
-                const dayRangePct = prevClose > 0 ? ((dayHigh - dayLow) / prevClose) * 100 : 0;
-                const rangePosition = (dayHigh - dayLow) > 0 ? (ltp - dayLow) / (dayHigh - dayLow) : 0.5;
-
-                const isCeMomentum = rangePosition > 0.60 && dayRangePct > 1.2;
-                const isPeMomentum = rangePosition < 0.40 && dayRangePct > 1.2;
-
-                if (!isCeMomentum && !isPeMomentum) continue;
-
-                const type = isCeMomentum ? 'CE' : 'PE';
-                const levels = this.gannAngleService.calculateAngles(prevClose, stock.openPrice);
-                momentumStocks.push({ symbol: stock.symbol, type, levels });
-            }
-
-            await this.cacheManager.set('GANN_ANGLE_LEVELS', JSON.stringify(momentumStocks), 1800000);
-            this.logger.log(`✅ [${timeStr}] Gann Angle Levels Cache: ${momentumStocks.length}/${stocks.length} stocks qualified (range position + day range filter).`);
-        } catch (error) {
-            this.logger.error(`Gann Angle Level Cache Build Failed: ${error.message}`);
-        }
-    }
-
-    /**
-     * Gann Angle Level Monitor — Runs every 30 seconds, 9:30–12:45 PM IST (Mon-Fri)
-     *
-     * Reads the GANN_ANGLE_LEVELS cache and detects R_90 / S_90 angle crossings.
-     * Adds qualifying stocks to the watchlist for 5-min candle close confirmation.
-     * CE: triggers at R_90, target R_135, SL R_67.5. Rejects if LTP ≥ R_135 (too late).
-     * PE: triggers at S_90, target S_135, SL S_67.5. Rejects if LTP ≤ S_135 (too deep).
-     */
-    @Cron('*/30 * * * * *')
-    async monitorGannAngleLevels() {
-        if (!this.isMarketHours()) return;
-        const now = new Date();
-        const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
-        if (timeStr < '09:30:00' || timeStr > '12:45:00') return;
-
-        const cached = await this.cacheManager.get<string>('GANN_ANGLE_LEVELS');
-        if (!cached) return;
-
-        const config = await this.prisma.shoonyaConfig.findFirst();
-        if (config && !config.gannAngleEnabled) return;
-
-        const momentumStocks: any[] = JSON.parse(cached);
-        if (momentumStocks.length === 0) return;
-
         const todayTraded = await this.paperTrading.getTodayTradedSymbols('GANN_ANGLE');
-        const eligibleSymbols = momentumStocks
-            .map(s => s.symbol)
-            .filter(s => !todayTraded.includes(s));
-        if (eligibleSymbols.length === 0) return;
 
-        const ltpMap = await this.nseService.getBatchLTP(eligibleSymbols);
+        let triggered = 0;
+        let checked = 0;
 
-        for (const item of momentumStocks) {
-            if (todayTraded.includes(item.symbol)) continue;
+        try {
+            // One batch call gets prevClose + openPrice for all 51 stocks
+            const quotes = await this.nseService.scanGannAngleQuotes();
+            const quoteMap = new Map(quotes.map(q => [q.symbol, q]));
 
-            const ltp = ltpMap[item.symbol];
-            if (!ltp) continue;
+            for (const symbol of GANN_ANGLE_UNIVERSE) {
+                if (todayTraded.includes(symbol)) continue;
 
-            const levels = item.levels;
+                // Skip if already in the 3-min confirmation queue
+                const inQueue = await this.cacheManager.get(`WATCHLIST:${symbol}`);
+                if (inQueue) continue;
 
-            if (item.type === 'CE') {
-                if (ltp >= levels.R_90) {
-                    if (ltp >= levels.R_135) {
-                        // Upper band rejection: price already at/above target — risk too high
-                        this.logger.debug(`[Gann Angle] CE SKIP: [${item.symbol}] LTP ₹${ltp} ≥ R_135 ₹${levels.R_135} — upper band, risk too high`);
-                    } else {
-                        await this.heartbeatService.addToWatchlist(
-                            item.symbol, levels.R_90, 'CE',
-                            levels.R_135, levels.R_67_5, 'GANN_ANGLE'
-                        );
-                        this.logger.log(`📍 [Gann Angle] CE cross R_90: [${item.symbol}] LTP ₹${ltp} ≥ R_90 ₹${levels.R_90} → watchlist (T:₹${levels.R_135} SL:₹${levels.R_67_5})`);
-                    }
+                const q = quoteMap.get(symbol);
+                if (!q || !q.prevClose) continue;
+
+                // Compute Gann levels for this stock
+                const levels = this.gannAngleService.calculateAngles(q.prevClose, q.openPrice);
+                const entryInfo = this.gannAngleService.getEntryLevels(symbol, levels, 'CE');
+                const triggerR  = entryInfo.triggerLevel;    // R_90 (or R_45)
+                const upperBand = entryInfo.targetLevel;     // R_135 (or R_90) — rejection band
+
+                const triggerS  = this.gannAngleService.getEntryLevels(symbol, levels, 'PE').triggerLevel;
+                const lowerBand = this.gannAngleService.getEntryLevels(symbol, levels, 'PE').targetLevel;
+
+                // Fetch last completed 5-min candle close
+                const candleClose = await this.nseService.getLastCandleClose(symbol, '5');
+                checked++;
+                if (!candleClose) continue;
+
+                // CE trigger: 5-min close crossed above trigger angle, below upper band
+                if (candleClose > triggerR && candleClose < upperBand) {
+                    // Pass 0 for target/SL — computed from option premium at execution time
+                    await this.heartbeatService.addToWatchlist(symbol, triggerR, 'CE', 0, 0, 'GANN_ANGLE');
+                    this.logger.log(
+                        `📈 [Gann Angle] CE: [${symbol}] 5m close ₹${candleClose} > R_${entryInfo.angle} ₹${triggerR.toFixed(2)} → 3-min confirmation`
+                    );
+                    triggered++;
                 }
-            } else {
-                if (ltp <= levels.S_90) {
-                    if (ltp <= levels.S_135) {
-                        // Lower band rejection: price already at/below target — risk too high
-                        this.logger.debug(`[Gann Angle] PE SKIP: [${item.symbol}] LTP ₹${ltp} ≤ S_135 ₹${levels.S_135} — lower band, risk too high`);
-                    } else {
-                        await this.heartbeatService.addToWatchlist(
-                            item.symbol, levels.S_90, 'PE',
-                            levels.S_135, levels.S_67_5, 'GANN_ANGLE'
-                        );
-                        this.logger.log(`📍 [Gann Angle] PE cross S_90: [${item.symbol}] LTP ₹${ltp} ≤ S_90 ₹${levels.S_90} → watchlist (T:₹${levels.S_135} SL:₹${levels.S_67_5})`);
-                    }
+                // PE trigger: 5-min close crossed below trigger angle, above lower band
+                else if (candleClose < triggerS && candleClose > lowerBand) {
+                    await this.heartbeatService.addToWatchlist(symbol, triggerS, 'PE', 0, 0, 'GANN_ANGLE');
+                    this.logger.log(
+                        `📉 [Gann Angle] PE: [${symbol}] 5m close ₹${candleClose} < S_${entryInfo.angle} ₹${triggerS.toFixed(2)} → 3-min confirmation`
+                    );
+                    triggered++;
                 }
+
+                // Small delay to respect Shoonya rate limits on per-stock candle calls
+                await new Promise(res => setTimeout(res, 120));
             }
+
+            this.logger.log(`✅ [${timeStr}] Gann Angle 5-min scan: ${checked}/${GANN_ANGLE_UNIVERSE.length} checked | ${triggered} triggered.`);
+        } catch (error) {
+            this.logger.error(`Gann Angle 5-min Scan Failed: ${error.message}`);
         }
     }
 

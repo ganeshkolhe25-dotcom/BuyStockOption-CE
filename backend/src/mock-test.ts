@@ -37,7 +37,7 @@ async function runSimulation() {
     };
 
     shoonyaService.getOptionQuote = async (token) => {
-        return { ltp: 105, askPrice: 105, bidPrice: 100 };
+        return { ltp: 105, askPrice: 105, bidPrice: 100, volume: 0 };
     };
 
     // MOCK DATA 

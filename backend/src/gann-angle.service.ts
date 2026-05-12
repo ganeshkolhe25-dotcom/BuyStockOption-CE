@@ -14,6 +14,18 @@ export interface GannAngleLevels {
     S_135:  number;
 }
 
+export interface GannEntryLevels {
+    triggerLevel: number;
+    targetLevel:  number;
+    slLevel:      number;
+    angle:        45 | 90;
+}
+
+// Stocks that use 45° trigger instead of 90°.
+// Entry at R_45/S_45, target R_90/S_90, SL R_22.5/S_22.5.
+// Populate when identified from backtesting.
+const TRIGGER_45_STOCKS = new Set<string>([]);
+
 @Injectable()
 export class GannAngleService {
     private readonly logger = new Logger(GannAngleService.name);
@@ -54,6 +66,31 @@ export class GannAngleService {
             S_90:   calc(90,   -1),
             S_135:  calc(135,  -1),
         };
+    }
+
+    /** Returns 45 for stocks in the 45° list, 90 for all others */
+    getTriggerAngle(symbol: string): 45 | 90 {
+        return TRIGGER_45_STOCKS.has(symbol) ? 45 : 90;
+    }
+
+    /**
+     * Returns entry/target/SL levels for a symbol based on its trigger angle.
+     * CE: trigger R_90 (or R_45), target R_135 (or R_90), SL R_67.5 (or R_22.5)
+     * PE: same logic on the support side.
+     * Note: for Nirwana-aligned GANN_ANGLE, target/SL are overridden to premium % at
+     * execution time; these spot levels are kept only as reference / for logging.
+     */
+    getEntryLevels(symbol: string, levels: GannAngleLevels, type: 'CE' | 'PE'): GannEntryLevels {
+        const angle = this.getTriggerAngle(symbol);
+        if (type === 'CE') {
+            return angle === 45
+                ? { triggerLevel: levels.R_45,  targetLevel: levels.R_90,  slLevel: levels.R_22_5, angle }
+                : { triggerLevel: levels.R_90,  targetLevel: levels.R_135, slLevel: levels.R_67_5, angle };
+        } else {
+            return angle === 45
+                ? { triggerLevel: levels.S_45,  targetLevel: levels.S_90,  slLevel: levels.S_22_5, angle }
+                : { triggerLevel: levels.S_90,  targetLevel: levels.S_135, slLevel: levels.S_67_5, angle };
+        }
     }
 
     /** Returns trend based on R_90 / S_90 structural levels */

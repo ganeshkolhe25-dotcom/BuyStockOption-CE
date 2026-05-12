@@ -28,6 +28,22 @@ export interface NSE15mData {
     volumes: number[];
 }
 
+// Nirwana-aligned Gann Angle universe — exact 51-stock list from Nirwana's option_helper.py.
+// All changes to GANN_ANGLE strategy use this list exclusively; other strategies are unaffected.
+export const GANN_ANGLE_UNIVERSE = [
+    "M&M",       "MUTHOOTFIN", "TRENT",      "PIDILITIND", "DIXON",
+    "COFORGE",   "NHPC",       "ADANIENSOL", "DRREDDY",    "BEL",
+    "ASTRAL",    "BAJAJFINSV", "LUPIN",      "BAJFINANCE", "MFSL",
+    "CHOLAFIN",  "HEROMOTOCO", "SUPREMEIND", "MARUTI",     "HAL",
+    "POLYCAB",   "POLICYBZR",  "DIVISLAB",   "TIINDIA",    "ADANIGREEN",
+    "CGPOWER",   "OFSS",       "TVSMOTOR",   "BAJAJ-AUTO", "SOLARINDS",
+    "CIPLA",     "COLPAL",     "GRASIM",     "GLENMARK",   "LTIM",
+    "ALKEM",     "MANKIND",    "APOLLOHOSP", "PRESTIGE",   "ADANIPORTS",
+    "TCS",       "INFY",       "HDFCAMC",    "AXISBANK",   "RELIANCE",
+    "HDFCBANK",  "SBIN",       "ICICIBANK",  "TATAPOWER",  "WIPRO",
+    "BRITANNIA",
+];
+
 // Custom trading universe — hand-picked by the trader for both Gann-9 and 5 EMA strategies.
 // These 33 stocks plus NIFTY and BANKNIFTY (handled separately as indices) replace the
 // broad Nifty-200 / Nifty-100 baskets. All symbols verified on NSE as of May 2026.
@@ -114,7 +130,7 @@ export class NseService implements OnModuleInit {
             return;
         }
 
-        const targetSymbols = Array.from(new Set([...NIFTY_100_BASKET, ...NIFTY_200_BASKET, ...CUSTOM_TRADING_UNIVERSE]));
+        const targetSymbols = Array.from(new Set([...NIFTY_100_BASKET, ...NIFTY_200_BASKET, ...CUSTOM_TRADING_UNIVERSE, ...GANN_ANGLE_UNIVERSE]));
 
         for (let i = 0; i < targetSymbols.length; i += 10) {
             const batch = targetSymbols.slice(i, i + 10);
@@ -177,6 +193,55 @@ export class NseService implements OnModuleInit {
             }
         }
         return processed;
+    }
+
+    /**
+     * Batch quotes for the 51-stock Gann Angle universe.
+     * Returns prevClose + openPrice needed to compute Gann levels.
+     * Used exclusively by the GANN_ANGLE 5-min candle scanner.
+     */
+    async scanGannAngleQuotes(): Promise<NSEStock[]> {
+        const tokens = GANN_ANGLE_UNIVERSE.map(sym => this.tokenMap.get(sym)).filter(Boolean) as string[];
+        if (tokens.length === 0) return [];
+
+        const results = await this.shoonya.getMultiQuotes('NSE', tokens);
+        const processed: NSEStock[] = [];
+
+        for (const item of results) {
+            if (item.lp && item.tsym) {
+                const symbol = item.tsym.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym;
+                const ltp      = parseFloat(item.lp);
+                const prevClose = parseFloat(item.c) || ltp;
+                const openPrice = parseFloat(item.o) || ltp;
+                processed.push({
+                    symbol,
+                    ltp,
+                    pChange:    parseFloat((((ltp - prevClose) / prevClose) * 100).toFixed(2)),
+                    prevClose,
+                    openPrice,
+                    dayHigh:    parseFloat(item.h) || ltp,
+                    dayLow:     parseFloat(item.l) || ltp,
+                });
+            }
+        }
+        return processed;
+    }
+
+    /**
+     * Fetch the last COMPLETED candle close for a symbol via Shoonya TPS.
+     * Used by the GANN_ANGLE 5-min scanner to check close vs angle level.
+     * interval: '3' or '5' minutes.
+     */
+    async getLastCandleClose(symbol: string, interval: '3' | '5'): Promise<number | null> {
+        const token = this.tokenMap.get(symbol);
+        if (!token) return null;
+        try {
+            const candles = await this.shoonya.getTimePriceSeries('NSE', token, interval, 2);
+            if (!candles || candles.length < 2) return null;
+            const c = candles[1]; // [0] = in-progress, [1] = last completed
+            const close = parseFloat(c?.intc || '0');
+            return close > 0 ? close : null;
+        } catch { return null; }
     }
 
     /**

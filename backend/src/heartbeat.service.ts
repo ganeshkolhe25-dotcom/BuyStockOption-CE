@@ -48,10 +48,6 @@ export class HeartbeatService {
     private pendingLimitOrders = new Map<string, PendingLimitOrder>();
     // 2-Candle: tokens where half-exit at 1:1 has already been done — remaining half is trailing
     private readonly cbHalfExited = new Set<string>();
-    // Gann Angle: tokens where partial booking at +5% premium has been done
-    private readonly gaHalfExited = new Set<string>();
-    // Gann Angle: 5-min candle close cache — refreshed at most every 30s to avoid Shoonya rate limits
-    private readonly gannAngleCandleCache = new Map<string, { close: number; fetchedAt: number }>();
 
     constructor(
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
@@ -239,7 +235,7 @@ export class HeartbeatService {
                 // GANN_ANGLE: 5-minute sustain with 5-min candle close confirmation
                 // EMA_5: 3-minute sustain with live LTP confirmation
                 // GANN_9: 5-minute sustain with 5-min candle close confirmation
-                const sustainMs = isCandleBreakout ? 0 : isEma ? 3 * 60 * 1000 : 5 * 60 * 1000;
+                const sustainMs = isCandleBreakout ? 0 : isEma ? 3 * 60 * 1000 : isGannAngle ? 3 * 60 * 1000 : 5 * 60 * 1000;
                 const timeElapsedMs = Date.now() - entry.breakoutTime;
 
                 if (timeElapsedMs >= sustainMs) {
@@ -288,47 +284,27 @@ export class HeartbeatService {
                     }
 
                     if (isGannAngle) {
-                        const candle5m = await this.getLastCompletedCandle(entry.symbol, '5');
-                        if (candle5m !== null) {
-                            const confirmedBy5m = entry.type === 'CE'
-                                ? candle5m.close >= entry.triggerPrice
-                                : candle5m.close <= entry.triggerPrice;
-                            if (!confirmedBy5m) {
-                                const msg = `5-min candle close ₹${candle5m.close} did not confirm ${entry.type} trigger ₹${entry.triggerPrice.toFixed(2)}. Fake breakout — ignored.`;
+                        // 5-min candle trigger was already confirmed by the scanner before addToWatchlist.
+                        // Here we only check the 3-min candle close to confirm continuation (Nirwana logic).
+                        const candle3m = await this.getLastCompletedCandle(entry.symbol, '3');
+                        if (candle3m !== null) {
+                            const confirmedBy3m = entry.type === 'CE'
+                                ? candle3m.close > entry.triggerPrice
+                                : candle3m.close < entry.triggerPrice;
+                            if (!confirmedBy3m) {
+                                const msg = `3-min candle close ₹${candle3m.close} RESET ${entry.type} signal — price back ${entry.type === 'CE' ? 'below' : 'above'} trigger ₹${entry.triggerPrice.toFixed(2)}. Signal cancelled.`;
                                 this.logger.warn(`❌ [${entry.symbol}] ${msg}`);
                                 this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, msg, entry.strategyName);
                                 await this.cacheManager.del(key);
                                 updatedKeys = updatedKeys.filter(k => k !== key);
                                 continue;
                             }
-                            // 3-min candle confirmation — matches Nirwana's evaluate_3m_confirmation.
-                            // If the 3-min candle has closed back below/above the trigger, signal is RESET.
-                            const candle3m = await this.getLastCompletedCandle(entry.symbol, '3');
-                            if (candle3m !== null) {
-                                const confirmedBy3m = entry.type === 'CE'
-                                    ? candle3m.close > entry.triggerPrice
-                                    : candle3m.close < entry.triggerPrice;
-                                if (!confirmedBy3m) {
-                                    const msg3m = `3-min candle close ₹${candle3m.close} reset ${entry.type} signal — price back ${entry.type === 'CE' ? 'below' : 'above'} trigger ₹${entry.triggerPrice.toFixed(2)}. Signal cancelled.`;
-                                    this.logger.warn(`❌ [${entry.symbol}] ${msg3m}`);
-                                    this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, msg3m, entry.strategyName);
-                                    await this.cacheManager.del(key);
-                                    updatedKeys = updatedKeys.filter(k => k !== key);
-                                    continue;
-                                }
-                                this.logger.log(
-                                    `📊 [${entry.symbol}] GANN_ANGLE CONFIRM [5-MIN ✅ 3-MIN ✅]: ` +
-                                    `5m close ₹${candle5m.close} | 3m close ₹${candle3m.close} | trigger ₹${entry.triggerPrice.toFixed(2)}`
-                                );
-                            } else {
-                                this.logger.log(
-                                    `📊 [${entry.symbol}] GANN_ANGLE 5-MIN CANDLE CONFIRM: ` +
-                                    `close ₹${candle5m.close} | high ₹${candle5m.high} | low ₹${candle5m.low} | ` +
-                                    `trigger ₹${entry.triggerPrice.toFixed(2)}`
-                                );
-                            }
+                            this.logger.log(
+                                `📊 [${entry.symbol}] GANN_ANGLE 3-MIN CONFIRM ✅: ` +
+                                `3m close ₹${candle3m.close} ${entry.type === 'CE' ? '>' : '<'} trigger ₹${entry.triggerPrice.toFixed(2)}`
+                            );
                         } else {
-                            this.logger.warn(`[${entry.symbol}] Could not fetch 5-min candle — proceeding with tick confirmation.`);
+                            this.logger.warn(`[${entry.symbol}] 3-min candle unavailable — proceeding with tick confirmation.`);
                         }
                     }
 
@@ -367,8 +343,15 @@ export class HeartbeatService {
      */
     private async executeOptionTrade(symbol: string, cmp: number, type: 'CE' | 'PE', targetPrice: number, slPrice: number, strategyName: string = 'GANN_9', triggerPrice?: number) {
         try {
-            const preferITM = strategyName === 'EMA_5' || strategyName === 'GANN_ANGLE'; // ITM = higher delta, moves in-step with underlying — matches Nirwana option selection
-            const contract = await this.shoonyaService.findAtmOption(symbol, cmp, type, preferITM);
+            // GANN_ANGLE: top-2 ITM by volume (Nirwana logic).
+            // All other strategies: standard ATM/ITM via findAtmOption.
+            let contract;
+            if (strategyName === 'GANN_ANGLE') {
+                contract = await this.shoonyaService.findTopItmOptionByVolume(symbol, cmp, type);
+            } else {
+                const preferITM = strategyName === 'EMA_5';
+                contract = await this.shoonyaService.findAtmOption(symbol, cmp, type, preferITM);
+            }
 
             if (!contract) {
                 this.logger.warn(`[${symbol}] No F&O option found — skipping this trade.`);
@@ -383,27 +366,13 @@ export class HeartbeatService {
                 return;
             }
 
-            // GANN_ANGLE: place a limit buy order at mid price (bid+ask)/2
-            // Actual fill is checked every 15s for up to 2 minutes, then discarded if unfilled
+            // GANN_ANGLE: override target/SL to option-premium-based values (Nirwana logic).
+            // targetPrice (passed as 0 from watchlist) → askPrice × 1.10 (+10%)
+            // slPrice    (passed as 0 from watchlist) → askPrice × 0.95 (-5%)
+            // These are stored in the position and compared against option bid in evaluateExitForPosition.
             if (strategyName === 'GANN_ANGLE') {
-                const midPrice = parseFloat(((optionPremiumInfo.bidPrice + optionPremiumInfo.askPrice) / 2).toFixed(2));
-                const lotValue = contract.lotSize * midPrice;
-                if (lotValue > 40000) {
-                    const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Mid: ₹${midPrice}, Qty: ${contract.lotSize})`;
-                    this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
-                    this.logger.warn(failMsg);
-                    return;
-                }
-                const orderKey = `BUY:${contract.token}`;
-                if (!this.pendingLimitOrders.has(orderKey)) {
-                    this.pendingLimitOrders.set(orderKey, {
-                        symbol, token: contract.token, tradingSymbol: contract.tradingSymbol,
-                        type, qty: contract.lotSize, midPrice, orderType: 'BUY',
-                        placedAt: Date.now(), targetPrice, slPrice, strategyName
-                    });
-                    this.logger.log(`📋 GANN_ANGLE LIMIT BUY: [${symbol}] ${type} at mid ₹${midPrice} (bid ₹${optionPremiumInfo.bidPrice} / ask ₹${optionPremiumInfo.askPrice}). 2-min fill window.`);
-                }
-                return;
+                targetPrice = parseFloat((optionPremiumInfo.askPrice * 1.10).toFixed(2));
+                slPrice     = parseFloat((optionPremiumInfo.askPrice * 0.95).toFixed(2));
             }
 
             // ─────────────────────────────────────────────────────────────────────────
@@ -467,8 +436,20 @@ export class HeartbeatService {
             }
 
             // CANDLE_BREAKOUT: apply lot multiplier from config (NIFTY/BANKNIFTY configured independently)
+            // GANN_ANGLE: dynamic lot sizing targeting ~₹30k (Nirwana logic)
             // All other strategies use contract.lotSize directly (1 lot)
             let tradeQty = contract.lotSize;
+            if (strategyName === 'GANN_ANGLE') {
+                const oneLotVal = contract.lotSize * optionPremiumInfo.askPrice;
+                if (oneLotVal < 10000) {
+                    // Very cheap option — scale up towards ₹30k, rounded to whole lots
+                    const lotsNeeded = Math.round(30000 / (optionPremiumInfo.askPrice * contract.lotSize));
+                    tradeQty = Math.max(contract.lotSize, lotsNeeded * contract.lotSize);
+                } else if (oneLotVal < 15000) {
+                    tradeQty = contract.lotSize * 2; // 2 lots (≈₹20–30k)
+                }
+                // oneLotVal ≥ 15000: 1 lot (tradeQty unchanged — already set to contract.lotSize)
+            }
             if (strategyName === 'CANDLE_BREAKOUT') {
                 const cfg = await this.shoonyaService.getConfig();
                 const lotMultiplier = symbol === 'NIFTY'
@@ -478,8 +459,9 @@ export class HeartbeatService {
             }
 
             // 🛑 Lot Price Constraint: Total Investment (Qty * Price) must be <= 40,000
+            // GANN_ANGLE is exempt from the ₹40k cap (it targets ₹30k, max 2 lots ~₹30–60k)
             const lotValue = tradeQty * optionPremiumInfo.askPrice;
-            if (lotValue > 40000) {
+            if (strategyName !== 'GANN_ANGLE' && lotValue > 40000) {
                 const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Price: ₹${optionPremiumInfo.askPrice}, Qty: ${tradeQty})`;
                 this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
                 this.logger.warn(failMsg);
@@ -695,7 +677,7 @@ export class HeartbeatService {
                 return;
             }
             const sellKey = `SELL:${pos.token}`;
-            if (!forceImmediate && (pos.strategyName === 'GANN_ANGLE' || pos.strategyName === 'CANDLE_BREAKOUT')) {
+            if (!forceImmediate && pos.strategyName === 'CANDLE_BREAKOUT') {
                 if (this.pendingLimitOrders.has(sellKey)) return; // already pending
                 this.closingTokens.add(pos.token);
                 const midPrice = parseFloat(((currentBid + (optionInfo?.askPrice ?? currentBid)) / 2).toFixed(2));
@@ -704,7 +686,7 @@ export class HeartbeatService {
                     type: pos.type, qty: pos.qty, midPrice, orderType: 'SELL',
                     placedAt: Date.now(), strategyName: pos.strategyName, exitReason: reason,
                 });
-                this.logger.log(`📋 GANN_ANGLE LIMIT SELL: [${pos.symbol}] at mid ₹${midPrice}. Reason: ${reason}`);
+                this.logger.log(`📋 CANDLE_BREAKOUT LIMIT SELL: [${pos.symbol}] at mid ₹${midPrice}. Reason: ${reason}`);
             } else {
                 this.closingTokens.add(pos.token);
                 this.logger.warn(`${exitPrefix} Immediate exit triggered for token: ${pos.token} — ${reason}`);
@@ -743,6 +725,21 @@ export class HeartbeatService {
             await this.paperTrading.closePosition(pos.token, currentBid, reason);
             return;
         }
+
+        // ── GANN_ANGLE: premium +10% target exit (uses option bid, not underlying LTP) ──
+        if (pos.strategyName === 'GANN_ANGLE' && pos.entryPrice > 0 && currentBid >= pos.entryPrice * 1.10) {
+            if (this.closingTokens.has(pos.token)) { this.logger.debug(`[SKIP] Position already closing: ${pos.token}`); return; }
+            this.closingTokens.add(pos.token);
+            const reason = `TARGET HIT: option bid ₹${currentBid.toFixed(2)} >= +10% of entry ₹${pos.entryPrice.toFixed(2)}`;
+            this.logger.warn(`🎯 [${pos.symbol}] ${reason}`);
+            this.logger.warn(`${exitPrefix} Immediate exit triggered for token: ${pos.token} — ${reason}`);
+            await this.paperTrading.closePosition(pos.token, currentBid, reason);
+            return;
+        }
+
+        // GANN_ANGLE: all exits handled above (premium -5% stop + premium +10% target).
+        // Skip the underlying LTP-based SL/target section entirely for GANN_ANGLE.
+        if (pos.strategyName === 'GANN_ANGLE') return;
 
         // ── EMA_5: consume touch-exit flag set by scanner on candle close ───────
         if (pos.strategyName === 'EMA_5') {
@@ -818,38 +815,12 @@ export class HeartbeatService {
                 }
             }
 
-            // GANN_ANGLE: partial booking at +5% option premium — book half, move spot SL to current LTP
-            if (pos.strategyName === 'GANN_ANGLE' && !this.gaHalfExited.has(pos.token)) {
-                if (pos.entryPrice > 0 && currentBid >= pos.entryPrice * 1.05) {
-                    const halfQty = Math.floor(pos.qty / 2);
-                    if (halfQty > 0) {
-                        const newSpotSL = parseFloat(ltp.toFixed(2));
-                        await this.paperTrading.partialClosePosition(pos.token, halfQty, currentBid, '5% premium gain');
-                        this.paperTrading.updatePositionSL(pos.token, newSpotSL);
-                        this.gaHalfExited.add(pos.token);
-                        this.logger.log(
-                            `✂️  GANN_ANGLE HALF EXIT: [${pos.symbol}] ${pos.type} 5% premium hit @ ₹${currentBid.toFixed(2)}. ` +
-                            `Closed ${halfQty} lots @ ₹${currentBid.toFixed(2)}. Spot SL → ₹${newSpotSL}. Holding ${pos.qty - halfQty} lots.`
-                        );
-                    }
-                }
-            }
-
             if (pos.type === 'CE') {
                 if (ltp >= pos.targetPrice) {
                     this.logger.warn(`🎯 TARGET HIT: [${pos.symbol}] Underlying reached ₹${ltp} >= Target ₹${pos.targetPrice}`);
                     await triggerExit(`Target Hit at ₹${ltp}`);
                 } else if (ltp < pos.slPrice) {
-                    if (pos.strategyName === 'GANN_ANGLE') {
-                        // Wait for a full 5-min candle to close below SL — avoids wick-based stops
-                        const candleClose = await this.getGannAngleCandleClose(pos.symbol);
-                        if (candleClose !== null && candleClose < pos.slPrice) {
-                            this.logger.warn(`🛑 SL HIT (5-MIN CLOSE): [${pos.symbol}] candle close ₹${candleClose} < SL ₹${pos.slPrice}. Exiting.`);
-                            await triggerExit(`SL Hit: 5-min candle close ₹${candleClose} < SL ₹${pos.slPrice}`, true);
-                        } else {
-                            this.logger.debug(`[${pos.symbol}] LTP wick ₹${ltp} below SL ₹${pos.slPrice} — 5-min close ₹${candleClose ?? 'N/A'} still holds. Waiting.`);
-                        }
-                    } else if (pos.strategyName === 'CANDLE_BREAKOUT') {
+                    if (pos.strategyName === 'CANDLE_BREAKOUT') {
                         this.logger.warn(`🛑 SL HIT: [${pos.symbol}] ₹${ltp} < SL ₹${pos.slPrice}. Closing at market bid ₹${currentBid}.`);
                         await triggerExit(`SL Broken at ₹${ltp}`, true);
                     } else if (!pos.slTriggerTime) {
@@ -877,16 +848,7 @@ export class HeartbeatService {
                     this.logger.warn(`🎯 TARGET HIT: [${pos.symbol}] Underlying reached ₹${ltp} <= Target ₹${pos.targetPrice}`);
                     await triggerExit(`Target Hit at ₹${ltp}`);
                 } else if (ltp > pos.slPrice) {
-                    if (pos.strategyName === 'GANN_ANGLE') {
-                        // Wait for a full 5-min candle to close above SL — avoids wick-based stops
-                        const candleClose = await this.getGannAngleCandleClose(pos.symbol);
-                        if (candleClose !== null && candleClose > pos.slPrice) {
-                            this.logger.warn(`🛑 SL HIT (5-MIN CLOSE): [${pos.symbol}] candle close ₹${candleClose} > SL ₹${pos.slPrice}. Exiting.`);
-                            await triggerExit(`SL Hit: 5-min candle close ₹${candleClose} > SL ₹${pos.slPrice}`, true);
-                        } else {
-                            this.logger.debug(`[${pos.symbol}] LTP wick ₹${ltp} above SL ₹${pos.slPrice} — 5-min close ₹${candleClose ?? 'N/A'} still holds. Waiting.`);
-                        }
-                    } else if (pos.strategyName === 'CANDLE_BREAKOUT') {
+                    if (pos.strategyName === 'CANDLE_BREAKOUT') {
                         this.logger.warn(`🛑 SL HIT: [${pos.symbol}] ₹${ltp} > SL ₹${pos.slPrice}. Closing at market bid ₹${currentBid}.`);
                         await triggerExit(`SL Broken at ₹${ltp}`, true);
                     } else if (!pos.slTriggerTime) {
@@ -1079,24 +1041,7 @@ export class HeartbeatService {
     @Cron('40 15 * * 1-5', { timeZone: 'Asia/Kolkata' })
     clearCandleBreakoutState() {
         this.cbHalfExited.clear();
-        this.gaHalfExited.clear();
-        this.gannAngleCandleCache.clear();
-        this.logger.log('[EOD] Half-exit trackers and GANN_ANGLE candle cache cleared for new day.');
-    }
-
-    /**
-     * Returns the last completed 5-min candle close for a symbol, cached for 30s.
-     * Called on every SL-breach tick for GANN_ANGLE — the cache prevents Shoonya rate-limit hits.
-     */
-    private async getGannAngleCandleClose(symbol: string): Promise<number | null> {
-        const cached = this.gannAngleCandleCache.get(symbol);
-        if (cached && (Date.now() - cached.fetchedAt) < 30_000) {
-            return cached.close;
-        }
-        const candle = await this.getLastCompletedCandle(symbol, '5');
-        if (candle === null) return null;
-        this.gannAngleCandleCache.set(symbol, { close: candle.close, fetchedAt: Date.now() });
-        return candle.close;
+        this.logger.log('[EOD] Half-exit trackers cleared for new day.');
     }
 
     private async getLastCompletedCandle(symbol: string, interval: '1' | '3' | '5' = '5'): Promise<{ close: number; high: number; low: number } | null> {
