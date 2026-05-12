@@ -256,24 +256,45 @@ export class HeartbeatService {
                     }
 
                     if (isGannAngle) {
-                        const candle = await this.getLastCompletedCandle(entry.symbol, '5');
-                        if (candle !== null) {
-                            const confirmedByCandle = entry.type === 'CE'
-                                ? candle.close >= entry.triggerPrice
-                                : candle.close <= entry.triggerPrice;
-                            if (!confirmedByCandle) {
-                                const msg = `5-min candle close ₹${candle.close} did not confirm ${entry.type} trigger ₹${entry.triggerPrice.toFixed(2)}. Fake breakout — ignored.`;
+                        const candle5m = await this.getLastCompletedCandle(entry.symbol, '5');
+                        if (candle5m !== null) {
+                            const confirmedBy5m = entry.type === 'CE'
+                                ? candle5m.close >= entry.triggerPrice
+                                : candle5m.close <= entry.triggerPrice;
+                            if (!confirmedBy5m) {
+                                const msg = `5-min candle close ₹${candle5m.close} did not confirm ${entry.type} trigger ₹${entry.triggerPrice.toFixed(2)}. Fake breakout — ignored.`;
                                 this.logger.warn(`❌ [${entry.symbol}] ${msg}`);
                                 this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, msg, entry.strategyName);
                                 await this.cacheManager.del(key);
                                 updatedKeys = updatedKeys.filter(k => k !== key);
                                 continue;
                             }
-                            this.logger.log(
-                                `📊 [${entry.symbol}] GANN_ANGLE 5-MIN CANDLE CONFIRM: ` +
-                                `close ₹${candle.close} | high ₹${candle.high} | low ₹${candle.low} | ` +
-                                `trigger ₹${entry.triggerPrice.toFixed(2)}`
-                            );
+                            // 3-min candle confirmation — matches Nirwana's evaluate_3m_confirmation.
+                            // If the 3-min candle has closed back below/above the trigger, signal is RESET.
+                            const candle3m = await this.getLastCompletedCandle(entry.symbol, '3');
+                            if (candle3m !== null) {
+                                const confirmedBy3m = entry.type === 'CE'
+                                    ? candle3m.close > entry.triggerPrice
+                                    : candle3m.close < entry.triggerPrice;
+                                if (!confirmedBy3m) {
+                                    const msg3m = `3-min candle close ₹${candle3m.close} reset ${entry.type} signal — price back ${entry.type === 'CE' ? 'below' : 'above'} trigger ₹${entry.triggerPrice.toFixed(2)}. Signal cancelled.`;
+                                    this.logger.warn(`❌ [${entry.symbol}] ${msg3m}`);
+                                    this.paperTrading.logFailedTrade(entry.symbol, entry.type, entry.triggerPrice, msg3m, entry.strategyName);
+                                    await this.cacheManager.del(key);
+                                    updatedKeys = updatedKeys.filter(k => k !== key);
+                                    continue;
+                                }
+                                this.logger.log(
+                                    `📊 [${entry.symbol}] GANN_ANGLE CONFIRM [5-MIN ✅ 3-MIN ✅]: ` +
+                                    `5m close ₹${candle5m.close} | 3m close ₹${candle3m.close} | trigger ₹${entry.triggerPrice.toFixed(2)}`
+                                );
+                            } else {
+                                this.logger.log(
+                                    `📊 [${entry.symbol}] GANN_ANGLE 5-MIN CANDLE CONFIRM: ` +
+                                    `close ₹${candle5m.close} | high ₹${candle5m.high} | low ₹${candle5m.low} | ` +
+                                    `trigger ₹${entry.triggerPrice.toFixed(2)}`
+                                );
+                            }
                         } else {
                             this.logger.warn(`[${entry.symbol}] Could not fetch 5-min candle — proceeding with tick confirmation.`);
                         }
@@ -314,7 +335,7 @@ export class HeartbeatService {
      */
     private async executeOptionTrade(symbol: string, cmp: number, type: 'CE' | 'PE', targetPrice: number, slPrice: number, strategyName: string = 'GANN_9', triggerPrice?: number) {
         try {
-            const preferITM = strategyName === 'EMA_5'; // ITM = better Delta + less decay for mean-reversion
+            const preferITM = strategyName === 'EMA_5' || strategyName === 'GANN_ANGLE'; // ITM = higher delta, moves in-step with underlying — matches Nirwana option selection
             const contract = await this.shoonyaService.findAtmOption(symbol, cmp, type, preferITM);
 
             if (!contract) {
@@ -1039,7 +1060,7 @@ export class HeartbeatService {
         return candle.close;
     }
 
-    private async getLastCompletedCandle(symbol: string, interval: '1' | '5' = '5'): Promise<{ close: number; high: number; low: number } | null> {
+    private async getLastCompletedCandle(symbol: string, interval: '1' | '3' | '5' = '5'): Promise<{ close: number; high: number; low: number } | null> {
         const token = this.nseService.getToken(symbol);
         if (!token) return null;
         try {
