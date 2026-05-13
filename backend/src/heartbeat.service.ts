@@ -789,7 +789,14 @@ export class HeartbeatService {
                 if (!this.cbHalfExited.has(pos.token)) {
                     const phase1Hit = pos.type === 'CE' ? ltp >= phase1Price : ltp <= phase1Price;
                     if (phase1Hit) {
-                        const halfQty = Math.floor(pos.qty / 2);
+                        // Split at lot level, not raw units — 5 lots → exit 2, trail 3
+                        const cfg = await this.shoonyaService.getConfig();
+                        const configuredLots = pos.symbol === 'NIFTY'
+                            ? (cfg.candleNiftyLots || 1)
+                            : (cfg.candleBankNiftyLots || 1);
+                        const lotSize = Math.round(pos.qty / configuredLots);
+                        const halfLots = Math.floor(configuredLots / 2);
+                        const halfQty  = halfLots * lotSize;
                         if (halfQty > 0) {
                             await this.paperTrading.partialClosePosition(pos.token, halfQty, currentBid, '1:1 R:R reached');
                             const breakevenUnderlying = parseFloat(((2 * pos.slPrice! + pos.targetPrice!) / 3).toFixed(2));
@@ -797,8 +804,8 @@ export class HeartbeatService {
                             this.cbHalfExited.add(pos.token);
                             this.logger.log(
                                 `✂️  2-CANDLE HALF EXIT: [${pos.symbol}] ${pos.type} 1:1 hit @ underlying ₹${ltp}. ` +
-                                `Closed ${halfQty} lots @ option ₹${currentBid.toFixed(2)}. ` +
-                                `SL → breakeven ₹${breakevenUnderlying}. Trailing ${pos.qty - halfQty} lots.`
+                                `Closed ${halfLots} lots (${halfQty} units) @ option ₹${currentBid.toFixed(2)}. ` +
+                                `SL → breakeven ₹${breakevenUnderlying}. Trailing ${configuredLots - halfLots} lots (${pos.qty - halfQty} units).`
                             );
                         }
                     }
