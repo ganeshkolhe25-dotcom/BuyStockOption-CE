@@ -125,9 +125,9 @@ export class Ema5Service {
         // ── CE Setup: alert candle CLOSES below EMA (wick may cross — close is the signal) ──
         if (alertClose < emaAtAlert) {
             if (actHigh > alertHigh) {
-                if (latestRsi !== null && previousRsi !== null && (latestRsi < 45 || latestRsi > 65 || latestRsi <= previousRsi)) {
+                if (latestRsi !== null && previousRsi !== null && (latestRsi < 35 || latestRsi > 65 || latestRsi <= previousRsi)) {
                     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
-                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be 45–65 and rising for CE` };
+                        status: `Blocked: RSI=${latestRsi.toFixed(1)} must be 35–65 and rising for CE` };
                 }
                 if (!volumeSurge) {
                     return { ...NONE, emaAtAlert: parseFloat(emaAtAlert.toFixed(2)), alertCandle,
