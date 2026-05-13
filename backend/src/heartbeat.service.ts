@@ -459,9 +459,9 @@ export class HeartbeatService {
             }
 
             // 🛑 Lot Price Constraint: Total Investment (Qty * Price) must be <= 40,000
-            // GANN_ANGLE is exempt from the ₹40k cap (it targets ₹30k, max 2 lots ~₹30–60k)
+            // GANN_ANGLE and CANDLE_BREAKOUT are exempt — both use config-defined lot counts
             const lotValue = tradeQty * optionPremiumInfo.askPrice;
-            if (strategyName !== 'GANN_ANGLE' && lotValue > 40000) {
+            if (strategyName !== 'GANN_ANGLE' && strategyName !== 'CANDLE_BREAKOUT' && lotValue > 40000) {
                 const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Price: ₹${optionPremiumInfo.askPrice}, Qty: ${tradeQty})`;
                 this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
                 this.logger.warn(failMsg);
