@@ -21,12 +21,10 @@ export class GannService {
      * @returns GannLevels resistance and support levels
      */
     calculateLevels(previousClose: number): GannLevels {
-        // True Square of 9 Formula
-        // A = Previous Day Close (Shoonya item.c — last official trading-day close;
-        //     on Monday Shoonya automatically returns Friday's close, so no special handling needed)
-        // B = sqrt(A)  ← the "root" of the square
-        // R1 = (B+1)², R2 = (B+2)², R3 = (B+3)²
-        // S1 = (B-1)², S2 = (B-2)², S3 = (B-3)²
+        // Gann Square of 9 — linear step formula
+        // A = previousClose, B = √A (one "square root unit")
+        // R(n) = A + n×B  (uniform upward steps)
+        // S(n) = A − n×B  (uniform downward steps)
 
         const A = previousClose;
         const B = Math.sqrt(A);
@@ -34,15 +32,19 @@ export class GannService {
         const levels: GannLevels = {
             previousClose: A,
             squareRoot: B,
-            R1: Math.pow(B + 1, 2),
-            R2: Math.pow(B + 2, 2),
-            R3: Math.pow(B + 3, 2),
-            S1: Math.pow(B - 1, 2),
-            S2: Math.pow(B - 2, 2),
-            S3: Math.pow(B - 3, 2),
+            R1: A + B,
+            R2: A + 2 * B,
+            R3: A + 3 * B,
+            S1: A - B,
+            S2: A - 2 * B,
+            S3: A - 3 * B,
         };
 
-        this.logger.debug(`Calculated Gann Levels for Prev Close ${A}: R1=${levels.R1.toFixed(2)}, S1=${levels.S1.toFixed(2)}`);
+        this.logger.log(
+            `Gann-9 levels [prevClose=${A}] B=${B.toFixed(4)} | ` +
+            `R1=${levels.R1.toFixed(2)} R2=${levels.R2.toFixed(2)} R3=${levels.R3.toFixed(2)} | ` +
+            `S1=${levels.S1.toFixed(2)} S2=${levels.S2.toFixed(2)} S3=${levels.S3.toFixed(2)}`
+        );
         return levels;
     }
 
