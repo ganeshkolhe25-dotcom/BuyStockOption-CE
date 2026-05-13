@@ -767,7 +767,7 @@ export class HeartbeatService {
         // not on an intracandle LTP spike. Cache with 60s TTL to avoid per-second REST calls.
         if (pos.strategyName === 'GANN_ANGLE' && pos.slPrice) {
             const closeCacheKey = `GA_SPOT_CLOSE:${pos.symbol}`;
-            let candleClose = await this.cacheManager.get<number>(closeCacheKey);
+            let candleClose: number | null | undefined = await this.cacheManager.get<number>(closeCacheKey);
             if (candleClose === undefined || candleClose === null) {
                 candleClose = await this.nseService.getLastCandleClose(pos.symbol, '5');
                 if (candleClose) await this.cacheManager.set(closeCacheKey, candleClose, 60000);
