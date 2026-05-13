@@ -121,6 +121,126 @@ export class ScannerService implements OnModuleInit {
     }
 
     /**
+     * Gann Angle Warmup — Pre-caches Gann levels for all 51 stocks at 9:20 AM IST (Mon-Fri).
+     * Stores computed levels under GANN_ANGLE_LEVELS so the per-minute LTP scan avoids
+     * recomputing them on every tick. Uses openPrice for gap-adjusted base if gap ≥ 1%.
+     */
+    @Cron('20 09 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    async warmupGannAngleLevels() {
+        const config = await this.prisma.shoonyaConfig.findFirst();
+        if (config && !config.gannAngleEnabled) return;
+
+        try {
+            const quotes = await this.nseService.scanGannAngleQuotes();
+            const quoteMap = new Map(quotes.map(q => [q.symbol, q]));
+            const levelsMap: Record<string, any> = {};
+
+            for (const symbol of GANN_ANGLE_UNIVERSE) {
+                const q = quoteMap.get(symbol);
+                if (!q || !q.prevClose) continue;
+
+                const levels  = this.gannAngleService.calculateAngles(q.prevClose, q.openPrice);
+                const ceInfo  = this.gannAngleService.getEntryLevels(symbol, levels, 'CE');
+                const peInfo  = this.gannAngleService.getEntryLevels(symbol, levels, 'PE');
+
+                levelsMap[symbol] = {
+                    triggerR:  ceInfo.triggerLevel,
+                    upperBand: ceInfo.targetLevel,
+                    slCE:      ceInfo.slLevel,
+                    triggerS:  peInfo.triggerLevel,
+                    lowerBand: peInfo.targetLevel,
+                    slPE:      peInfo.slLevel,
+                };
+            }
+
+            await this.cacheManager.set('GANN_ANGLE_LEVELS', JSON.stringify(levelsMap), 43200000);
+            this.logger.log(`✅ [Gann Angle Warmup] Pre-cached levels for ${Object.keys(levelsMap).length} stocks at 9:20 AM.`);
+        } catch (error) {
+            this.logger.error(`Gann Angle warmup failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * Gann Angle Per-Minute LTP Scan — Nirwana-aligned intracandle trigger detection.
+     * Fires at :00 of every minute, 9:30–1:00 PM IST (Mon-Fri).
+     *
+     * Uses cached Gann levels from GANN_ANGLE_LEVELS (pre-computed at 9:20 AM warmup)
+     * and a single batch REST call for all 51 LTPs. Catches angle crossings that occur
+     * mid-candle, filling the gap between 5-min candle boundary checks.
+     */
+    @Cron('0 * 9-12 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    async perMinuteGannAngleLtpScan() {
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+        if (timeStr < '09:30:00' || timeStr > '13:00:00') return;
+
+        const config = await this.prisma.shoonyaConfig.findFirst();
+        if (config && !config.gannAngleEnabled) return;
+
+        const tradedCE = await this.paperTrading.getTodayTradedSymbols('GANN_ANGLE', 'CE');
+        const tradedPE = await this.paperTrading.getTodayTradedSymbols('GANN_ANGLE', 'PE');
+
+        try {
+            // One batch call for live LTPs (also provides prevClose/openPrice for fallback)
+            const quotes = await this.nseService.scanGannAngleQuotes();
+            const quoteMap = new Map(quotes.map(q => [q.symbol, q]));
+
+            // Use cached Gann levels (warmup at 9:20 AM); fall back to computing inline
+            const cachedLevelsStr = await this.cacheManager.get<string>('GANN_ANGLE_LEVELS');
+            const cachedLevels: Record<string, any> = cachedLevelsStr ? JSON.parse(cachedLevelsStr) : {};
+
+            let triggered = 0;
+
+            for (const symbol of GANN_ANGLE_UNIVERSE) {
+                const ceBlocked = tradedCE.includes(symbol);
+                const peBlocked = tradedPE.includes(symbol);
+                if (ceBlocked && peBlocked) continue;
+
+                const inQueue = await this.cacheManager.get(`WATCHLIST:${symbol}`);
+                if (inQueue) continue;
+
+                const q = quoteMap.get(symbol);
+                if (!q || !q.ltp) continue;
+
+                let triggerR: number, upperBand: number, slCE: number;
+                let triggerS: number, lowerBand: number, slPE: number;
+
+                if (cachedLevels[symbol]) {
+                    ({ triggerR, upperBand, slCE, triggerS, lowerBand, slPE } = cachedLevels[symbol]);
+                } else if (q.prevClose) {
+                    const levels = this.gannAngleService.calculateAngles(q.prevClose, q.openPrice);
+                    const ceInfo = this.gannAngleService.getEntryLevels(symbol, levels, 'CE');
+                    const peInfo = this.gannAngleService.getEntryLevels(symbol, levels, 'PE');
+                    triggerR = ceInfo.triggerLevel; upperBand = ceInfo.targetLevel; slCE = ceInfo.slLevel;
+                    triggerS = peInfo.triggerLevel; lowerBand = peInfo.targetLevel; slPE = peInfo.slLevel;
+                } else {
+                    continue;
+                }
+
+                const ltp = q.ltp;
+
+                if (!ceBlocked && ltp > triggerR && ltp < upperBand) {
+                    await this.heartbeatService.addToWatchlist(symbol, triggerR, 'CE', 0, slCE, 'GANN_ANGLE');
+                    this.logger.log(`📈 [Gann Angle LTP] CE: [${symbol}] LTP ₹${ltp} > R_90 ₹${triggerR.toFixed(2)} → 3-min confirmation`);
+                    triggered++;
+                }
+
+                if (!peBlocked && ltp < triggerS && ltp > lowerBand) {
+                    await this.heartbeatService.addToWatchlist(symbol, triggerS, 'PE', 0, slPE, 'GANN_ANGLE');
+                    this.logger.log(`📉 [Gann Angle LTP] PE: [${symbol}] LTP ₹${ltp} < S_90 ₹${triggerS.toFixed(2)} → 3-min confirmation`);
+                    triggered++;
+                }
+            }
+
+            if (triggered > 0) {
+                this.logger.log(`[${timeStr}] Gann Angle per-min LTP scan: ${triggered} new signal(s).`);
+            }
+        } catch (error) {
+            this.logger.error(`Gann Angle per-min LTP scan failed: ${error.message}`);
+        }
+    }
+
+    /**
      * Gann-9 Dynamic Universe Refresh — Runs every 10 minutes, 9:35 AM–2:30 PM IST (Mon-Fri).
      *
      * The 9:25 AM scan only captures stocks that had >= 0.5% pChange at that moment.
@@ -292,7 +412,7 @@ export class ScannerService implements OnModuleInit {
 
                 // CE trigger: 5-min close crossed above trigger angle, below upper band
                 if (!ceBlocked && candleClose > triggerR && candleClose < upperBand) {
-                    await this.heartbeatService.addToWatchlist(symbol, triggerR, 'CE', 0, 0, 'GANN_ANGLE');
+                    await this.heartbeatService.addToWatchlist(symbol, triggerR, 'CE', 0, entryInfo.slLevel, 'GANN_ANGLE');
                     this.logger.log(
                         `📈 [Gann Angle] CE: [${symbol}] 5m close ₹${candleClose} > R_${entryInfo.angle} ₹${triggerR.toFixed(2)} → 3-min confirmation`
                     );
@@ -301,7 +421,7 @@ export class ScannerService implements OnModuleInit {
 
                 // PE trigger: independent check — a CE trade earlier today does NOT block this
                 if (!peBlocked && candleClose < triggerS && candleClose > lowerBand) {
-                    await this.heartbeatService.addToWatchlist(symbol, triggerS, 'PE', 0, 0, 'GANN_ANGLE');
+                    await this.heartbeatService.addToWatchlist(symbol, triggerS, 'PE', 0, peInfo.slLevel, 'GANN_ANGLE');
                     this.logger.log(
                         `📉 [Gann Angle] PE: [${symbol}] 5m close ₹${candleClose} < S_${peInfo.angle} ₹${triggerS.toFixed(2)} → 3-min confirmation`
                     );

@@ -909,14 +909,21 @@ export class ShoonyaService implements OnModuleInit {
     /**
      * Resolve Symbol Name to Security Token Cache / Helper
      */
+    // Symbols whose Shoonya tsym differs from our internal name.
+    // Without this, SearchScrip returns an unrelated scrip as first result.
+    private readonly SEARCH_ALIASES: Record<string, string> = {
+        'LTIM': 'LTIMINDTREE',  // Shoonya tsym is LTIMINDTREE-EQ, not LTIM-EQ
+    };
+
     async searchSecurityToken(symbol: string, exch = 'NSE', retry = true): Promise<string | null> {
         try {
             if (!this.sessionToken) await this.authenticate();
             const config = await this.getConfig();
 
+            const searchText = this.SEARCH_ALIASES[symbol] || symbol;
             const jData = {
                 uid: config.uid,
-                stext: symbol,
+                stext: searchText,
                 exch: exch
             };
 
@@ -927,8 +934,11 @@ export class ShoonyaService implements OnModuleInit {
             });
 
             if (response.data.stat === 'Ok' && response.data.values?.length > 0) {
-                // Find exact match or first result
-                const match = response.data.values.find((v: any) => v.tsym === symbol || v.tsym === `${symbol}-EQ`);
+                // Match against both the internal symbol and the aliased search text
+                const match = response.data.values.find((v: any) =>
+                    v.tsym === symbol || v.tsym === `${symbol}-EQ` ||
+                    v.tsym === searchText || v.tsym === `${searchText}-EQ`
+                );
                 return match ? match.token : response.data.values[0].token;
             }
             return null;

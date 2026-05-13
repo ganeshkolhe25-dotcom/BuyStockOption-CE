@@ -20,6 +20,7 @@ export interface PaperPosition {
     maxLoss: number;
     strategyName?: string;
     partialPnl: number;   // accumulated P&L from partial exits (e.g. half-exit at 1:1)
+    lotSize?: number;     // contract lot size — used by GANN_ANGLE partial booking
 }
 
 @Injectable()
@@ -125,7 +126,7 @@ export class PaperTradingService implements OnModuleInit {
     /**
      * Executes a paper-traded Buy Order for Options
      */
-    async placeBuyOrder(symbol: string, token: string, tradingSymbol: string, type: 'CE' | 'PE', qty: number, price: number, targetPrice?: number, slPrice?: number, strategyName?: string) {
+    async placeBuyOrder(symbol: string, token: string, tradingSymbol: string, type: 'CE' | 'PE', qty: number, price: number, targetPrice?: number, slPrice?: number, strategyName?: string, lotSize?: number) {
         if (this.isTradingHalted) {
             const msg = `Market Close: Universal exit triggered. No new orders.`;
             this.logFailedTrade(symbol, type, price, msg, strategyName);
@@ -198,6 +199,7 @@ export class PaperTradingService implements OnModuleInit {
             maxLoss: 0,
             strategyName: strategyName || 'Default',
             partialPnl: 0,
+            lotSize,
         });
 
         this.logger.log(`✅ PAPER SETTLED: Bought ${qty} shares of [${symbol}] ${type} Token ${token} (${tradingSymbol}) at ₹${price}.`);

@@ -31,6 +31,8 @@ deploy_backend() {
     "${BE_SRC}/gann-angle.service.ts" \
     "${BE_SRC}/gann.service.ts" \
     "${BE_SRC}/prisma.service.ts" \
+    "${BE_SRC}/mock-test.ts" \
+    "${BE_SRC}/price-gateway.service.ts" \
     "${VM}:/home/maddy/BuyStockOption_CE/backend/src/" \
     --zone "$ZONE" --project "$PROJECT"
   echo "[BE] Building Docker image on VM..."
