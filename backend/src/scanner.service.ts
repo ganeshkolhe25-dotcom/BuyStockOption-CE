@@ -220,14 +220,14 @@ export class ScannerService implements OnModuleInit {
                 const ltp = q.ltp;
 
                 if (!ceBlocked && ltp > triggerR && ltp < upperBand) {
-                    await this.heartbeatService.addToWatchlist(symbol, triggerR, 'CE', 0, slCE, 'GANN_ANGLE');
-                    this.logger.log(`📈 [Gann Angle LTP] CE: [${symbol}] LTP ₹${ltp} > R_90 ₹${triggerR.toFixed(2)} → 3-min confirmation`);
+                    await this.heartbeatService.addToWatchlist(symbol, triggerR, 'CE', upperBand, slCE, 'GANN_ANGLE');
+                    this.logger.log(`📈 [Gann Angle LTP] CE: [${symbol}] LTP ₹${ltp} > R_90 ₹${triggerR.toFixed(2)} | Target R_135 ₹${upperBand.toFixed(2)} → 3-min confirmation`);
                     triggered++;
                 }
 
                 if (!peBlocked && ltp < triggerS && ltp > lowerBand) {
-                    await this.heartbeatService.addToWatchlist(symbol, triggerS, 'PE', 0, slPE, 'GANN_ANGLE');
-                    this.logger.log(`📉 [Gann Angle LTP] PE: [${symbol}] LTP ₹${ltp} < S_90 ₹${triggerS.toFixed(2)} → 3-min confirmation`);
+                    await this.heartbeatService.addToWatchlist(symbol, triggerS, 'PE', lowerBand, slPE, 'GANN_ANGLE');
+                    this.logger.log(`📉 [Gann Angle LTP] PE: [${symbol}] LTP ₹${ltp} < S_90 ₹${triggerS.toFixed(2)} | Target S_135 ₹${lowerBand.toFixed(2)} → 3-min confirmation`);
                     triggered++;
                 }
             }
@@ -412,18 +412,18 @@ export class ScannerService implements OnModuleInit {
 
                 // CE trigger: 5-min close crossed above trigger angle, below upper band
                 if (!ceBlocked && candleClose > triggerR && candleClose < upperBand) {
-                    await this.heartbeatService.addToWatchlist(symbol, triggerR, 'CE', 0, entryInfo.slLevel, 'GANN_ANGLE');
+                    await this.heartbeatService.addToWatchlist(symbol, triggerR, 'CE', upperBand, entryInfo.slLevel, 'GANN_ANGLE');
                     this.logger.log(
-                        `📈 [Gann Angle] CE: [${symbol}] 5m close ₹${candleClose} > R_${entryInfo.angle} ₹${triggerR.toFixed(2)} → 3-min confirmation`
+                        `📈 [Gann Angle] CE: [${symbol}] 5m close ₹${candleClose} > R_${entryInfo.angle} ₹${triggerR.toFixed(2)} | Target R_135 ₹${upperBand.toFixed(2)} → 3-min confirmation`
                     );
                     triggered++;
                 }
 
                 // PE trigger: independent check — a CE trade earlier today does NOT block this
                 if (!peBlocked && candleClose < triggerS && candleClose > lowerBand) {
-                    await this.heartbeatService.addToWatchlist(symbol, triggerS, 'PE', 0, peInfo.slLevel, 'GANN_ANGLE');
+                    await this.heartbeatService.addToWatchlist(symbol, triggerS, 'PE', lowerBand, peInfo.slLevel, 'GANN_ANGLE');
                     this.logger.log(
-                        `📉 [Gann Angle] PE: [${symbol}] 5m close ₹${candleClose} < S_${peInfo.angle} ₹${triggerS.toFixed(2)} → 3-min confirmation`
+                        `📉 [Gann Angle] PE: [${symbol}] 5m close ₹${candleClose} < S_${peInfo.angle} ₹${triggerS.toFixed(2)} | Target S_135 ₹${lowerBand.toFixed(2)} → 3-min confirmation`
                     );
                     triggered++;
                 }
