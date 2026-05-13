@@ -858,13 +858,16 @@ export class HeartbeatService {
                         const halfQty  = halfLots * lotSize;
                         if (halfQty > 0) {
                             await this.paperTrading.partialClosePosition(pos.token, halfQty, currentBid, '1:1 R:R reached');
-                            const breakevenUnderlying = parseFloat(((2 * pos.slPrice! + pos.targetPrice!) / 3).toFixed(2));
-                            this.paperTrading.updatePositionSL(pos.token, breakevenUnderlying);
+                            // Trail SL immediately from the 1:1 price — don't revert to entry.
+                            // Prevents a fast reversal between ticks from booking a loss on the remaining half.
+                            const trailFactor = pos.type === 'CE' ? 0.99875 : 1.00125;
+                            const initialTrailSL = parseFloat((ltp * trailFactor).toFixed(2));
+                            this.paperTrading.updatePositionSL(pos.token, initialTrailSL);
                             this.cbHalfExited.add(pos.token);
                             this.logger.log(
                                 `✂️  2-CANDLE HALF EXIT: [${pos.symbol}] ${pos.type} 1:1 hit @ underlying ₹${ltp}. ` +
                                 `Closed ${halfLots} lots (${halfQty} units) @ option ₹${currentBid.toFixed(2)}. ` +
-                                `SL → breakeven ₹${breakevenUnderlying}. Trailing ${configuredLots - halfLots} lots (${pos.qty - halfQty} units).`
+                                `SL → ₹${initialTrailSL} (trail from 1:1). Trailing ${configuredLots - halfLots} lots (${pos.qty - halfQty} units).`
                             );
                         }
                     }
