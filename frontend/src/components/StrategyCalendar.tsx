@@ -6,7 +6,7 @@ import { ChevronLeft, ChevronRight, Calendar } from "lucide-react";
 interface Props {
   history: any[];
   strategyName: string | string[];   // e.g. 'CANDLE_BREAKOUT' or ['GANN_9', null]
-  accentColor: "orange" | "indigo" | "emerald" | "amber" | "blue";
+  accentColor: "orange" | "indigo" | "emerald" | "amber" | "blue" | "violet";
 }
 
 const ACCENT = {
@@ -15,6 +15,7 @@ const ACCENT = {
   emerald: { text: "text-emerald-400", border: "border-emerald-500/30", bg: "bg-emerald-500/15" },
   amber:   { text: "text-amber-400",   border: "border-amber-500/30",   bg: "bg-amber-500/15" },
   blue:    { text: "text-blue-400",    border: "border-blue-500/30",    bg: "bg-blue-500/15" },
+  violet:  { text: "text-violet-400",  border: "border-violet-500/30",  bg: "bg-violet-500/15" },
 };
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
