@@ -48,8 +48,10 @@ export class HeartbeatService {
     private pendingLimitOrders = new Map<string, PendingLimitOrder>();
     // 2-Candle: tokens where half-exit at 1:1 has already been done — remaining half is trailing
     private readonly cbHalfExited = new Set<string>();
-    // GANN_ANGLE: tokens where half-exit at 5% has already been done — remaining half trails at cost
+    // GANN_ANGLE: tokens where half-exit at +5% premium has already been done
     private readonly gaPartialBooked = new Set<string>();
+    // GANN_ANGLE: peak premium seen since partial exit — used to compute trailing SL (50% of peak gain)
+    private readonly gaPeakPremium = new Map<string, number>();
 
     constructor(
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
@@ -714,14 +716,47 @@ export class HeartbeatService {
                     const halfQty  = halfLots * lotSize;
                     await this.paperTrading.partialClosePosition(pos.token, halfQty, currentBid, 'PARTIAL_BOOK_5%');
                     this.gaPartialBooked.add(pos.token);
-                    this.logger.log(`✂️ [GANN_ANGLE] PARTIAL BOOK 5%: [${pos.symbol}] ${halfQty} units @ ₹${currentBid.toFixed(2)}. Spot SL remains at R/S_67.5.`);
+                    this.gaPeakPremium.set(pos.token, currentBid); // seed peak at partial-exit price
+                    this.logger.log(`✂️ [GANN_ANGLE] PARTIAL BOOK 5%: [${pos.symbol}] ${halfQty} units @ ₹${currentBid.toFixed(2)}. Trailing SL active on remaining half.`);
                     return;
                 }
             }
         }
 
-        // 3. Spot target: underlying live LTP reaches R_135 (CE) or S_135 (PE) — Nirwana exit
-        // 4. Spot SL: underlying 5-min candle CLOSE crosses R_67.5 (CE) or S_67.5 (PE) — Nirwana exit
+        // 3. Post-partial premium exits: +10% hard target and trailing SL (50% of peak gain above entry)
+        //    Only active after partial booking is done. Checked before spot-based exits.
+        if (pos.strategyName === 'GANN_ANGLE' && this.gaPartialBooked.has(pos.token) && pos.entryPrice > 0) {
+            // Update peak premium seen since partial exit
+            const prevPeak = this.gaPeakPremium.get(pos.token) ?? currentBid;
+            const peak = Math.max(prevPeak, currentBid);
+            this.gaPeakPremium.set(pos.token, peak);
+
+            // Hard target: remaining half exits at +10% premium
+            if (currentBid >= pos.entryPrice * 1.10) {
+                if (!this.closingTokens.has(pos.token)) {
+                    this.closingTokens.add(pos.token);
+                    const reason = `PREMIUM TARGET +10%: bid ₹${currentBid.toFixed(2)} >= entry ₹${pos.entryPrice} +10%. Exiting remaining half.`;
+                    this.logger.warn(`🎯 [${pos.symbol}] ${reason}`);
+                    await this.paperTrading.closePosition(pos.token, currentBid, reason);
+                    return;
+                }
+            }
+
+            // Trailing SL: lock in 50% of peak gain above entry (breakeven at minimum)
+            const trailingSL = pos.entryPrice + (peak - pos.entryPrice) * 0.5;
+            if (currentBid <= trailingSL) {
+                if (!this.closingTokens.has(pos.token)) {
+                    this.closingTokens.add(pos.token);
+                    const reason = `TRAILING SL HIT: bid ₹${currentBid.toFixed(2)} <= trail ₹${trailingSL.toFixed(2)} (peak ₹${peak.toFixed(2)}, entry ₹${pos.entryPrice}). Exiting remaining half.`;
+                    this.logger.warn(`🛑 [${pos.symbol}] ${reason}`);
+                    await this.paperTrading.closePosition(pos.token, currentBid, reason);
+                    return;
+                }
+            }
+        }
+
+        // 4. Spot target: underlying live LTP reaches R_135 (CE) or S_135 (PE) — Nirwana exit
+        // 5. Spot SL: underlying 5-min candle CLOSE crosses R_67.5 (CE) or S_67.5 (PE) — Nirwana exit
         if (pos.strategyName === 'GANN_ANGLE') {
             const ltpMap = await this.nseService.getBatchLTP([pos.symbol]);
             const spotLtp = ltpMap[pos.symbol] ?? null;
@@ -1088,6 +1123,7 @@ export class HeartbeatService {
     clearCandleBreakoutState() {
         this.cbHalfExited.clear();
         this.gaPartialBooked.clear();
+        this.gaPeakPremium.clear();
         this.logger.log('[EOD] Half-exit trackers cleared for new day.');
     }
 

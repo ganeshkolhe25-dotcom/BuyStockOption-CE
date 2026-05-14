@@ -474,12 +474,12 @@ export class ScannerService implements OnModuleInit {
                 this.logger.warn('[5 EMA PE] No morning universe cached — falling back to static VOLATILE_NIFTY100 list.');
             }
             const stocks = await this.nseService.scanEma5mUniverse(universe);
-            const todayTraded = await this.paperTrading.getTodayTradedSymbols('EMA_5');
+            const tradedPE = await this.paperTrading.getTodayTradedSymbols('EMA_5', 'PE');
 
             // PE signal detection only (CE handled by 15-min cron)
             let matches = 0;
             for (const stock of stocks) {
-                if (todayTraded.includes(stock.symbol)) continue;
+                if (tradedPE.includes(stock.symbol)) continue;
 
                 const signal = this.ema5Service.analyzeData(stock);
 
@@ -540,12 +540,12 @@ export class ScannerService implements OnModuleInit {
             const universeStr = await this.cacheManager.get<string>('EMA5_UNIVERSE');
             const universe: string[] | undefined = universeStr ? JSON.parse(universeStr) : undefined;
             const stocks = await this.nseService.scanEma5_15mUniverse(universe);
-            const todayTraded = await this.paperTrading.getTodayTradedSymbols('EMA_5');
+            const tradedCE = await this.paperTrading.getTodayTradedSymbols('EMA_5', 'CE');
 
             // CE signal detection only (PE handled by 5-min cron)
             let matches = 0;
             for (const stock of stocks) {
-                if (todayTraded.includes(stock.symbol)) continue;
+                if (tradedCE.includes(stock.symbol)) continue;
 
                 const signal = this.ema5Service.analyzeData(stock);
 

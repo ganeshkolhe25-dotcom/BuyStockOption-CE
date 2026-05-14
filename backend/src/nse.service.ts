@@ -382,6 +382,8 @@ export class NseService implements OnModuleInit {
         this.logger.log(`Fetching 15-min Shoonya Candles for ${targetSymbols.length} EMA universe stocks (CE scan)...`);
         const processed: NSE15mData[] = [];
 
+        const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
         for (const sym of targetSymbols) {
             const token = this.tokenMap.get(sym);
             if (!token) continue;
@@ -389,6 +391,17 @@ export class NseService implements OnModuleInit {
             // 3 days ensures enough 15-min candles for EMA(5) to stabilize
             const candles = await this.shoonya.getTimePriceSeries('NSE', token, '15', 3);
             if (candles.length > 10) {
+                // Guard: alert candle (candles[1] = 2nd newest in Shoonya's newest-first order)
+                // must be from TODAY. If it's from yesterday, the alert+activation pair spans two
+                // trading days — an invalid cross-day setup (caused the erroneous 9:30 CE trade).
+                const alertDate = new Date(parseInt(candles[1].ssboe) * 1000)
+                    .toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+                if (alertDate !== todayIST) {
+                    this.logger.debug(`[15m EMA CE] ${sym}: alert candle is from ${alertDate} (not today). Skipping — no valid intraday setup yet.`);
+                    await new Promise(res => setTimeout(res, 100));
+                    continue;
+                }
+
                 const closes  = candles.map(c => parseFloat(c.intc)).reverse();
                 const highs   = candles.map(c => parseFloat(c.inth)).reverse();
                 const lows    = candles.map(c => parseFloat(c.intl)).reverse();
@@ -445,6 +458,8 @@ export class NseService implements OnModuleInit {
         this.logger.log(`Fetching 5-min Shoonya Candles for ${targetSymbols.length} EMA universe stocks...`);
         const processed: NSE15mData[] = [];
 
+        const todayIST5m = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+
         for (const sym of targetSymbols) {
             const token = this.tokenMap.get(sym);
             if (!token) continue;
@@ -452,6 +467,16 @@ export class NseService implements OnModuleInit {
             // 2 days covers today's session fully even at market open
             const candles = await this.shoonya.getTimePriceSeries('NSE', token, '5', 2);
             if (candles.length > 15) {
+                // Guard: alert candle (candles[1] = 2nd newest in Shoonya's newest-first order)
+                // must be from TODAY. Prevents a cross-day alert+activation pair at session open.
+                const alertDate = new Date(parseInt(candles[1].ssboe) * 1000)
+                    .toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+                if (alertDate !== todayIST5m) {
+                    this.logger.debug(`[5m EMA PE] ${sym}: alert candle is from ${alertDate} (not today). Skipping — no valid intraday setup yet.`);
+                    await new Promise(res => setTimeout(res, 100));
+                    continue;
+                }
+
                 const closes  = candles.map(c => parseFloat(c.intc)).reverse();
                 const highs   = candles.map(c => parseFloat(c.inth)).reverse();
                 const lows    = candles.map(c => parseFloat(c.intl)).reverse();
