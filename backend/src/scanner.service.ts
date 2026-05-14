@@ -707,9 +707,6 @@ export class ScannerService implements OnModuleInit {
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
         if (timeStr < '09:40:00' || timeStr > '12:30:00') return;
 
-        const config = await this.prisma.shoonyaConfig.findFirst();
-        if (config && !config.first5CandleEnabled) return;
-
         for (const inst of this.first5Candle.getInstruments()) {
             try {
                 const tradedCE = await this.paperTrading.getTodayTradedSymbols('FIRST_5_CANDLE', 'CE');
