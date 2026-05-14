@@ -166,6 +166,27 @@ export class HeartbeatService {
         await this.executeOptionTrade(symbol, ltp, type, targetPrice, slPrice, 'CANDLE_BREAKOUT', triggerPrice);
     }
 
+    async executeFirst5CandleDirectly(
+        symbol: string,
+        spotLtp: number,
+        type: 'CE' | 'PE',
+    ): Promise<void> {
+        const openPositions = await this.paperTrading.getPositions();
+        if (openPositions.some(p => p.symbol === symbol && p.strategyName === 'FIRST_5_CANDLE')) {
+            this.logger.log(`BLOCKED [Conflict]: [${symbol}] already has open FIRST_5_CANDLE position.`);
+            return;
+        }
+        const hasPendingBuy = Array.from(this.pendingLimitOrders.values())
+            .some(o => o.symbol === symbol && o.orderType === 'BUY' && o.strategyName === 'FIRST_5_CANDLE');
+        if (hasPendingBuy) {
+            this.logger.log(`BLOCKED [Conflict]: [${symbol}] pending FIRST_5_CANDLE buy in-flight.`);
+            return;
+        }
+        this.logger.log(`🚀 [ORB5] SIGNAL: [${symbol}] ${type} candle-close breakout confirmed at ₹${spotLtp}. Executing entry.`);
+        // slPrice=0 and targetPrice=0 — overridden inside executeOptionTrade for FIRST_5_CANDLE
+        await this.executeOptionTrade(symbol, spotLtp, type, 0, 0, 'FIRST_5_CANDLE', spotLtp);
+    }
+
     /**
      * The Heartbeat Worker - Runs automatically every 30 Seconds
      * Iterates through the active watchlist, validates Live LTP, 
@@ -456,10 +477,26 @@ export class HeartbeatService {
                 tradeQty = contract.lotSize * lotMultiplier;
             }
 
+            if (strategyName === 'FIRST_5_CANDLE') {
+                const cfg = await this.shoonyaService.getConfig();
+                const lotMultiplier = symbol === 'NIFTY'
+                    ? (cfg.first5CandleNiftyLots || 2)
+                    : (cfg.first5CandleBankNiftyLots || 2);
+                tradeQty = contract.lotSize * lotMultiplier;
+                // Premium-based SL (10% loss) and target (20% gain) on invested amount
+                slPrice    = parseFloat((optionPremiumInfo.askPrice * 0.90).toFixed(2));
+                targetPrice = parseFloat((optionPremiumInfo.askPrice * 1.20).toFixed(2));
+                const investedAmount = optionPremiumInfo.askPrice * tradeQty;
+                this.logger.log(
+                    `📐 [ORB5] [${symbol}] ${type}: premium ₹${optionPremiumInfo.askPrice} × ${tradeQty} = ₹${investedAmount.toFixed(0)} invested | ` +
+                    `SL ₹${slPrice} (−10%) | Target ₹${targetPrice} (+20%)`
+                );
+            }
+
             // 🛑 Lot Price Constraint: Total Investment (Qty * Price) must be <= 40,000
-            // GANN_ANGLE and CANDLE_BREAKOUT are exempt — both use config-defined lot counts
+            // GANN_ANGLE, CANDLE_BREAKOUT, and FIRST_5_CANDLE are exempt — use config-defined lots
             const lotValue = tradeQty * optionPremiumInfo.askPrice;
-            if (strategyName !== 'GANN_ANGLE' && strategyName !== 'CANDLE_BREAKOUT' && lotValue > 40000) {
+            if (strategyName !== 'GANN_ANGLE' && strategyName !== 'CANDLE_BREAKOUT' && strategyName !== 'FIRST_5_CANDLE' && lotValue > 40000) {
                 const failMsg = `STRATEGY REJECT: Lot Value ₹${lotValue.toFixed(2)} exceeds ₹40,000 limit. (Price: ₹${optionPremiumInfo.askPrice}, Qty: ${tradeQty})`;
                 this.paperTrading.logFailedTrade(symbol, type, cmp, failMsg);
                 this.logger.warn(failMsg);
@@ -894,6 +931,36 @@ export class HeartbeatService {
                         this.paperTrading.updatePositionSL(pos.token, newTrailSL);
                     }
                 }
+            }
+
+            // FIRST_5_CANDLE: premium-based exits — 10% SL and 20% target on invested premium.
+            // Checked against option bid price (currentBid), NOT underlying spot (ltp).
+            // Returns early so the underlying-based checks below do not fire for this strategy.
+            if (pos.strategyName === 'FIRST_5_CANDLE' && pos.entryPrice > 0) {
+                const premiumSL     = parseFloat((pos.entryPrice * 0.90).toFixed(2));
+                const premiumTarget = parseFloat((pos.entryPrice * 1.20).toFixed(2));
+
+                if (currentBid >= premiumTarget) {
+                    if (!this.closingTokens.has(pos.token)) {
+                        this.closingTokens.add(pos.token);
+                        const reason = `ORB TARGET +20%: bid ₹${currentBid.toFixed(2)} >= entry ₹${pos.entryPrice} × 1.20 = ₹${premiumTarget}`;
+                        this.logger.warn(`🎯 [ORB5] [${pos.symbol}] ${reason}`);
+                        await this.paperTrading.closePosition(pos.token, currentBid, reason);
+                    }
+                    return;
+                }
+
+                if (currentBid <= premiumSL) {
+                    if (!this.closingTokens.has(pos.token)) {
+                        this.closingTokens.add(pos.token);
+                        const reason = `ORB SL −10%: bid ₹${currentBid.toFixed(2)} <= entry ₹${pos.entryPrice} × 0.90 = ₹${premiumSL}`;
+                        this.logger.warn(`🛑 [ORB5] [${pos.symbol}] ${reason}`);
+                        await this.paperTrading.closePosition(pos.token, currentBid, reason);
+                    }
+                    return;
+                }
+
+                return; // still within SL/target band — no action needed
             }
 
             if (pos.type === 'CE') {

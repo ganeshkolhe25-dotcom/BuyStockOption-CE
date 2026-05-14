@@ -71,4 +71,7 @@ model ShoonyaConfig {
   initialFunds         Float   @default(100000)
   candleNiftyLots      Int     @default(1)
   candleBankNiftyLots  Int     @default(1)
+  first5CandleEnabled       Boolean @default(false)
+  first5CandleNiftyLots     Int     @default(2)
+  first5CandleBankNiftyLots Int     @default(2)
 }

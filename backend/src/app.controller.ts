@@ -8,6 +8,7 @@ import { ShoonyaService } from './shoonya.service';
 import { GannAngleService } from './gann-angle.service';
 import { NseService } from './nse.service';
 import { CandleBreakoutService } from './candle-breakout.service';
+import { First5CandleService } from './first5candle.service';
 
 @Controller()
 export class AppController {
@@ -20,6 +21,7 @@ export class AppController {
     private readonly gannAngleService: GannAngleService,
     private readonly nseService: NseService,
     private readonly candleBreakout: CandleBreakoutService,
+    private readonly first5Candle: First5CandleService,
   ) { }
 
   @Get('portfolio')
@@ -40,6 +42,11 @@ export class AppController {
   @Get('candle-breakout')
   getCandleBreakoutSetups() {
     return { status: 'success', data: this.candleBreakout.getSetups() };
+  }
+
+  @Get('first5candle')
+  getFirst5CandleStates() {
+    return { status: 'success', data: this.first5Candle.getStates() };
   }
 
   @Post('force-scan')
@@ -95,6 +102,9 @@ export class AppController {
       ema5Enabled: false,
       candleNiftyLots: 1,
       candleBankNiftyLots: 1,
+      first5CandleEnabled: false,
+      first5CandleNiftyLots: 2,
+      first5CandleBankNiftyLots: 2,
     };
   }
 
@@ -134,6 +144,9 @@ export class AppController {
           initialFunds: body.initialFunds !== undefined ? (parseFloat(body.initialFunds) || config.initialFunds) : config.initialFunds,
           candleNiftyLots: body.candleNiftyLots !== undefined ? (parseInt(body.candleNiftyLots) || config.candleNiftyLots) : config.candleNiftyLots,
           candleBankNiftyLots: body.candleBankNiftyLots !== undefined ? (parseInt(body.candleBankNiftyLots) || config.candleBankNiftyLots) : config.candleBankNiftyLots,
+          first5CandleEnabled: body.first5CandleEnabled !== undefined ? Boolean(body.first5CandleEnabled) : config.first5CandleEnabled,
+          first5CandleNiftyLots: body.first5CandleNiftyLots !== undefined ? (parseInt(body.first5CandleNiftyLots) || config.first5CandleNiftyLots) : config.first5CandleNiftyLots,
+          first5CandleBankNiftyLots: body.first5CandleBankNiftyLots !== undefined ? (parseInt(body.first5CandleBankNiftyLots) || config.first5CandleBankNiftyLots) : config.first5CandleBankNiftyLots,
         }
       });
     } else {
@@ -164,6 +177,9 @@ export class AppController {
           initialFunds: parseFloat(body.initialFunds) || 100000,
           candleNiftyLots: parseInt(body.candleNiftyLots) || 1,
           candleBankNiftyLots: parseInt(body.candleBankNiftyLots) || 1,
+          first5CandleEnabled: body.first5CandleEnabled !== undefined ? Boolean(body.first5CandleEnabled) : false,
+          first5CandleNiftyLots: parseInt(body.first5CandleNiftyLots) || 2,
+          first5CandleBankNiftyLots: parseInt(body.first5CandleBankNiftyLots) || 2,
         }
       });
     }

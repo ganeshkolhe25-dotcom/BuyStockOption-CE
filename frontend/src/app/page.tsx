@@ -7,6 +7,7 @@ import DashboardTab from "@/components/DashboardTab";
 import GannAngle from "@/components/GannAngle";
 import Ema5Strategy from "@/components/Ema5Strategy";
 import CandleBreakout from "@/components/CandleBreakout";
+import First5Candle from "@/components/First5Candle";
 import StrategyCalendar from "@/components/StrategyCalendar";
 import { CUSTOM_UNIVERSE } from "@/constants/universe";
 
@@ -49,7 +50,7 @@ export default function Home() {
   const [history, setHistory] = useState<any[]>([]);
   const [watchlist, setWatchlist] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'scanner' | 'watchlist' | 'positions' | 'history'>('scanner');
-  const [mainTab, setMainTab] = useState<'dashboard' | 'gann9' | 'gannAngle' | 'ema5' | 'candleBreakout' | 'shoonya'>('dashboard');
+  const [mainTab, setMainTab] = useState<'dashboard' | 'gann9' | 'gannAngle' | 'ema5' | 'candleBreakout' | 'first5Candle' | 'shoonya'>('dashboard');
   const [shoonyaConfig, setShoonyaConfig] = useState<any>(() => {
     const ls = typeof window !== 'undefined' ? window.localStorage : null;
     return {
@@ -517,6 +518,13 @@ export default function Home() {
             <Activity className="w-5 h-5 flex-shrink-0" /> 2-Candle Breakout
           </button>
 
+          <button
+            onClick={() => setMainTab('first5Candle')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${mainTab === 'first5Candle' ? 'bg-violet-500/10 text-violet-400 shadow-[inset_2px_0_0_0_#8b5cf6]' : 'text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200'}`}
+          >
+            <Activity className="w-5 h-5 flex-shrink-0" /> First-5 ORB
+          </button>
+
         </nav>
         
         <div className="p-4 border-t border-neutral-800">
@@ -561,6 +569,10 @@ export default function Home() {
              <Activity className="w-5 h-5" />
              <span className="text-[9px] font-bold">Candle</span>
            </button>
+           <button onClick={() => setMainTab('first5Candle')} className={`flex-1 flex flex-col items-center gap-1 ${mainTab === 'first5Candle' ? 'text-violet-400' : 'text-neutral-500'}`}>
+             <Activity className="w-5 h-5" />
+             <span className="text-[9px] font-bold">ORB-5</span>
+           </button>
            <button onClick={() => setMainTab('shoonya')} className={`flex-1 flex flex-col items-center gap-1 ${mainTab === 'shoonya' ? 'text-purple-400' : 'text-neutral-500'}`}>
              <Settings className="w-5 h-5" />
              <span className="text-[9px] font-bold">Setup</span>
@@ -579,6 +591,9 @@ export default function Home() {
 
         {/* 2-Candle Breakout Strategy View */}
         {mainTab === 'candleBreakout' && <CandleBreakout portfolio={portfolio} history={history} handleSquareOff={handleSquareOff} squaringOff={squaringOff} />}
+
+        {/* First-5 ORB Strategy View */}
+        {mainTab === 'first5Candle' && <First5Candle portfolio={portfolio} history={history} handleSquareOff={handleSquareOff} squaringOff={squaringOff} />}
 
         {/* Legacy Gann 9 View */}
         {mainTab === 'gann9' && (

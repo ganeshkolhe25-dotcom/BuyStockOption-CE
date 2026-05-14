@@ -13,6 +13,7 @@ import { PrismaService } from './prisma.service';
 import { GannAngleService } from './gann-angle.service';
 import { Ema5Service } from './ema5.service';
 import { CandleBreakoutService } from './candle-breakout.service';
+import { First5CandleService } from './first5candle.service';
 import { PriceGatewayService } from './price-gateway.service';
 
 @Module({
@@ -21,6 +22,6 @@ import { PriceGatewayService } from './price-gateway.service';
     CacheModule.register()
   ],
   controllers: [AppController],
-  providers: [AppService, GannService, NseService, ShoonyaService, HeartbeatService, PaperTradingService, ScannerService, PrismaService, GannAngleService, Ema5Service, CandleBreakoutService, PriceGatewayService],
+  providers: [AppService, GannService, NseService, ShoonyaService, HeartbeatService, PaperTradingService, ScannerService, PrismaService, GannAngleService, Ema5Service, CandleBreakoutService, First5CandleService, PriceGatewayService],
 })
 export class AppModule { }

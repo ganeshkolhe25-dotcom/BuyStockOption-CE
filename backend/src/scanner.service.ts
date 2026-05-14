@@ -10,6 +10,7 @@ import { HeartbeatService } from './heartbeat.service';
 import { PaperTradingService } from './paper.service';
 import { PrismaService } from './prisma.service';
 import { CandleBreakoutService } from './candle-breakout.service';
+import { First5CandleService } from './first5candle.service';
 
 @Injectable()
 export class ScannerService implements OnModuleInit {
@@ -25,6 +26,7 @@ export class ScannerService implements OnModuleInit {
         private readonly paperTrading: PaperTradingService,
         private readonly prisma: PrismaService,
         private readonly candleBreakout: CandleBreakoutService,
+        private readonly first5Candle: First5CandleService,
     ) { }
 
     async onModuleInit() {
@@ -691,9 +693,60 @@ export class ScannerService implements OnModuleInit {
         }
     }
 
+    /**
+     * First 5-Candle Rolling ORB — fires 5 sec after every 5-min candle close.
+     * Active window: 9:40 AM – 12:30 PM IST (Mon-Fri).
+     *
+     * Rolling window: at each fire, uses the last 5 completed candles as the range
+     * and the most recently closed candle as the breakout-check candle.
+     * Trades ONCE per index per day (CE and PE tracked independently).
+     */
+    @Cron('5 */5 9-12 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    async automatedFirst5CandleScan() {
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+        if (timeStr < '09:40:00' || timeStr > '12:30:00') return;
+
+        const config = await this.prisma.shoonyaConfig.findFirst();
+        if (config && !config.first5CandleEnabled) return;
+
+        for (const inst of this.first5Candle.getInstruments()) {
+            try {
+                const tradedCE = await this.paperTrading.getTodayTradedSymbols('FIRST_5_CANDLE', 'CE');
+                const tradedPE = await this.paperTrading.getTodayTradedSymbols('FIRST_5_CANDLE', 'PE');
+
+                // Both directions traded → skip entirely
+                if (tradedCE.includes(inst.symbol) && tradedPE.includes(inst.symbol)) continue;
+
+                const signal = await this.first5Candle.scanForBreakout(inst.symbol, inst.token);
+
+                if (signal === 'CE' && !tradedCE.includes(inst.symbol)) {
+                    const state = this.first5Candle.getStates().find(s => s.symbol === inst.symbol);
+                    const spotLtp = state?.activationCandle?.close ?? 0;
+                    if (spotLtp > 0) {
+                        await this.heartbeatService.executeFirst5CandleDirectly(inst.symbol, spotLtp, 'CE');
+                        this.first5Candle.markTraded(inst.symbol);
+                        this.logger.log(`✅ [ORB5] CE trade placed for ${inst.symbol} at ₹${spotLtp}`);
+                    }
+                } else if (signal === 'PE' && !tradedPE.includes(inst.symbol)) {
+                    const state = this.first5Candle.getStates().find(s => s.symbol === inst.symbol);
+                    const spotLtp = state?.activationCandle?.close ?? 0;
+                    if (spotLtp > 0) {
+                        await this.heartbeatService.executeFirst5CandleDirectly(inst.symbol, spotLtp, 'PE');
+                        this.first5Candle.markTraded(inst.symbol);
+                        this.logger.log(`✅ [ORB5] PE trade placed for ${inst.symbol} at ₹${spotLtp}`);
+                    }
+                }
+            } catch (err: any) {
+                this.logger.error(`[ORB5] ${inst.symbol} scan failed: ${err.message}`);
+            }
+        }
+    }
+
     /** EOD cleanup: clear candle setups so they don't carry over to next day */
     @Cron('35 15 * * 1-5', { timeZone: 'Asia/Kolkata' })
     clearCandleBreakoutSetups() {
         this.candleBreakout.clearAll();
+        this.first5Candle.clearAll();
     }
 }

@@ -35,4 +35,14 @@ export class PriceGatewayService {
             }
         }
     }
+
+    emitFirst5CandleEvent(event: { eventType: string; symbol: string; data: any }): void {
+        if (this.clients.size === 0) return;
+        const payload = JSON.stringify({ type: 'first5candle_event', ...event });
+        for (const client of this.clients) {
+            if (client.readyState === WebSocket.OPEN) {
+                client.send(payload);
+            }
+        }
+    }
 }
