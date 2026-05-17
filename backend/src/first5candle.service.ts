@@ -119,8 +119,19 @@ export class First5CandleService {
                 return null;
             }
 
+            // ── Direction filter: ORB window bias ────────────────────────────────────
+            // CE blocked if the 5-candle window is net bearish (last close < first open).
+            // PE blocked if the 5-candle window is net bullish (last close > first open).
+            const windowNetBullish = windowCandles[windowCandles.length - 1].close >= windowCandles[0].open;
+
             // ── Signal detection ─────────────────────────────────────────────────────
             if (activation.close > resistance && activation.isBullish) {
+                if (!windowNetBullish) {
+                    this.logger.debug(
+                        `[ORB5] CE BLOCKED for ${symbol}: window net-bearish (last close ₹${windowCandles[windowCandles.length-1].close} < first open ₹${windowCandles[0].open}).`
+                    );
+                    return null;
+                }
                 this.logger.log(
                     `📈 [ORB5] CE: [${symbol}] close ₹${activation.close} > R ₹${resistance} ` +
                     `| body ${bodyPct.toFixed(1)}% | vol ${activation.volume.toFixed(0)} vs avg ${windowAvgVol.toFixed(0)}`
@@ -130,6 +141,12 @@ export class First5CandleService {
             }
 
             if (activation.close < support && !activation.isBullish) {
+                if (windowNetBullish) {
+                    this.logger.debug(
+                        `[ORB5] PE BLOCKED for ${symbol}: window net-bullish (last close ₹${windowCandles[windowCandles.length-1].close} >= first open ₹${windowCandles[0].open}).`
+                    );
+                    return null;
+                }
                 this.logger.log(
                     `📉 [ORB5] PE: [${symbol}] close ₹${activation.close} < S ₹${support} ` +
                     `| body ${bodyPct.toFixed(1)}% | vol ${activation.volume.toFixed(0)} vs avg ${windowAvgVol.toFixed(0)}`

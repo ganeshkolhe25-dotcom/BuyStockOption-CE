@@ -170,11 +170,11 @@ export class ScannerService implements OnModuleInit {
      * and a single batch REST call for all 51 LTPs. Catches angle crossings that occur
      * mid-candle, filling the gap between 5-min candle boundary checks.
      */
-    @Cron('0 * 9-12 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    @Cron('0 * 9-14 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async perMinuteGannAngleLtpScan() {
         const now = new Date();
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
-        if (timeStr < '09:30:00' || timeStr > '13:00:00') return;
+        if (timeStr < '09:30:00' || timeStr > '14:00:00') return;
 
         const config = await this.prisma.shoonyaConfig.findFirst();
         if (config && !config.gannAngleEnabled) return;
@@ -361,11 +361,11 @@ export class ScannerService implements OnModuleInit {
      * No LTP-based pre-filter. No rangePosition / dayRangePct filter.
      * Target and SL are NOT passed here — they are computed from option premium at execution.
      */
-    @Cron('5 */5 9-12 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    @Cron('5 */5 9-14 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async automatedGannAngleScan() {
         const now = new Date();
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
-        if (timeStr < '09:30:00' || timeStr > '13:00:00') return;
+        if (timeStr < '09:30:00' || timeStr > '14:00:00') return;
 
         const config = await this.prisma.shoonyaConfig.findFirst();
         if (config && !config.gannAngleEnabled) {

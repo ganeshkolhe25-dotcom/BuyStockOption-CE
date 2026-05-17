@@ -21,6 +21,7 @@ export interface PaperPosition {
     strategyName?: string;
     partialPnl: number;   // accumulated P&L from partial exits (e.g. half-exit at 1:1)
     lotSize?: number;     // contract lot size — used by GANN_ANGLE partial booking
+    entryTime?: number;   // unix ms when position was opened — used for hold-time guards
 }
 
 @Injectable()
@@ -134,6 +135,15 @@ export class PaperTradingService implements OnModuleInit {
             return false;
         }
 
+        // Market-hours gate: reject orders placed outside 09:15–15:15 IST to prevent ghost DB entries
+        const nowTimeStr = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
+        if (nowTimeStr < '09:15:00' || nowTimeStr >= '15:15:00') {
+            const msg = `Pre/post-market order rejected at ${nowTimeStr} IST. Trading only allowed 09:15–15:15.`;
+            this.logFailedTrade(symbol, type, price, msg, strategyName);
+            this.logger.warn(`TRADE REJECTED: ${msg} [${symbol}]`);
+            return false;
+        }
+
         // Enforce per-day trade count limits at order placement (not at scan time)
         if (await this.isTradingHaltedForDay(strategyName)) {
             const msg = `Daily trade limit reached for ${strategyName || 'overall'}. Signal missed.`;
@@ -200,6 +210,7 @@ export class PaperTradingService implements OnModuleInit {
             strategyName: strategyName || 'Default',
             partialPnl: 0,
             lotSize,
+            entryTime: Date.now(),
         });
 
         this.logger.log(`✅ PAPER SETTLED: Bought ${qty} shares of [${symbol}] ${type} Token ${token} (${tradingSymbol}) at ₹${price}.`);
@@ -538,6 +549,27 @@ export class PaperTradingService implements OnModuleInit {
     }
 
     /**
+     * Ghost-trade cleanup at 9:20 AM IST — removes OPEN records with no strategyName and zero PnL
+     * that were created by pre-market bot restarts (old dist code artifact, belt-and-suspenders).
+     */
+    @Cron('20 09 * * 1-5', { timeZone: 'Asia/Kolkata' })
+    async cleanupGhostTrades() {
+        const cutoff = new Date();
+        cutoff.setHours(0, 0, 0, 0); // start of today IST (UTC midnight ≈ 05:30 IST — close enough)
+        const deleted = await this.prisma.tradeHistory.deleteMany({
+            where: {
+                status: 'OPEN',
+                strategyName: 'Default',
+                realizedPnl: null,
+                entryTime: { lt: new Date(Date.now() - 15 * 60 * 1000) } // older than 15 min
+            }
+        });
+        if (deleted.count > 0) {
+            this.logger.warn(`🧹 Cleaned up ${deleted.count} ghost OPEN trade(s) with no strategy at 9:20 AM.`);
+        }
+    }
+
+    /**
      * Universal Exit Monitor - Checks Every 10 Seconds
      * Triggers if 3:15 PM is hit
      */
@@ -583,15 +615,31 @@ export class PaperTradingService implements OnModuleInit {
            const lossLimit = await this.getStrategyLossLimit(strategy);
            const profitLimit = await this.getStrategyProfitLimit(strategy);
            
+           // Early warning: log at 40% of loss limit so we can spot deteriorating positions
+           const earlyWarnPct = 0.40;
+           if (strategyPnl < 0 && strategyPnl <= lossLimit * earlyWarnPct && !this.haltedStrategies.has(strategy)) {
+               const positions = Array.from(this.activePositions.values()).filter(p => (p.strategyName || 'GANN_9') === strategy);
+               for (const pos of positions) {
+                   const posPnl = (pos.currentLtp - pos.entryPrice) * pos.qty;
+                   this.logger.warn(`⚠️ [RISK EARLY WARN] ${strategy} at ₹${strategyPnl.toFixed(0)} (${(earlyWarnPct*100).toFixed(0)}% of limit ${lossLimit}). Position [${pos.symbol}] ${pos.type}: ₹${posPnl.toFixed(0)}`);
+               }
+           }
+
            if (strategyPnl <= lossLimit && !this.haltedStrategies.has(strategy)) {
                this.logger.warn(`🛑 TRIGGERING STRATEGY UNIVERSAL EXIT! Reason: ${strategy} Loss Exceeded ${lossLimit} threshold. (Current: ₹${strategyPnl.toFixed(2)})`);
                this.haltedStrategies.add(strategy);
                await this.persistStrategyHalt(strategy); // Survive server restart
 
-               // Liquidate ONLY this strategy's active positions
+               // Liquidate ONLY losing positions immediately; close profitable ones via limit order
                const positions = Array.from(this.activePositions.values()).filter(p => (p.strategyName || 'GANN_9') === strategy);
-               for (const pos of positions) {
-                   await this.closePosition(pos.token, pos.currentLtp, `RISK GUARD TRIGGERED: ${strategy} Loss Hit`);
+               const losers  = positions.filter(p => (p.currentLtp - p.entryPrice) * p.qty < 0);
+               const winners = positions.filter(p => (p.currentLtp - p.entryPrice) * p.qty >= 0);
+               for (const pos of losers) {
+                   await this.closePosition(pos.token, pos.currentLtp, `RISK GUARD TRIGGERED: ${strategy} Loss Hit — closing loser`);
+               }
+               for (const pos of winners) {
+                   this.logger.log(`💰 [RISK GUARD] Protecting winner [${pos.symbol}] ${pos.type} PnL ₹${((pos.currentLtp - pos.entryPrice) * pos.qty).toFixed(0)} — closing at market.`);
+                   await this.closePosition(pos.token, pos.currentLtp, `RISK GUARD: ${strategy} Loss Limit — closing profitable position`);
                }
            } else if (strategyPnl >= profitLimit && !this.haltedStrategies.has(strategy)) {
                this.logger.warn(`🎯 TRIGGERING STRATEGY UNIVERSAL EXIT! Reason: ${strategy} Profit Exceeded ${profitLimit} Target. Locking in Day Profits! (Current: ₹${strategyPnl.toFixed(2)})`);

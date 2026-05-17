@@ -52,6 +52,11 @@ export class HeartbeatService {
     private readonly gaPartialBooked = new Set<string>();
     // GANN_ANGLE: peak premium seen since partial exit — used to compute trailing SL (50% of peak gain)
     private readonly gaPeakPremium = new Map<string, number>();
+    // GANN_9: peak option premium seen since open — used for trailing stop
+    private readonly g9PeakPremium = new Map<string, number>();
+    // Spot LTP fallback cache — used when getBatchLTP returns null during REST cascade failures
+    private readonly lastKnownSpotLtp = new Map<string, { ltp: number; ts: number }>();
+    private readonly SPOT_LTP_STALE_MS = 10_000;
 
     constructor(
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
@@ -304,7 +309,8 @@ export class HeartbeatService {
                                 `trigger ₹${entry.triggerPrice.toFixed(2)} | sustain threshold ₹${sustainThreshold.toFixed(2)}`
                             );
                         } else {
-                            this.logger.warn(`[${entry.symbol}] Could not fetch 5-min candle — proceeding with tick confirmation.`);
+                            this.logger.warn(`[${entry.symbol}] Could not fetch 5-min candle — skipping this cycle, will retry next heartbeat.`);
+                            continue;
                         }
                     }
 
@@ -546,7 +552,7 @@ export class HeartbeatService {
 
         const now = new Date();
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
-        if (timeStr < '09:20:00' || timeStr > '14:45:00') return;
+        if (timeStr < '09:20:00' || timeStr > '14:00:00') return;
 
         // Respect the gann9Enabled toggle — if disabled mid-day, stop scanning immediately
         const config = await this.paperTrading.getStrategyConfig();
@@ -730,6 +736,18 @@ export class HeartbeatService {
             }
         };
 
+        // ── GANN_ANGLE: option premium hard stop (-35%) ───────────────────────────
+        // Fires BEFORE all other GANN_ANGLE exits — caps max option loss to 35%.
+        if (pos.strategyName === 'GANN_ANGLE' && pos.entryPrice > 0 && currentBid <= pos.entryPrice * 0.65) {
+            if (this.closingTokens.has(pos.token)) { this.logger.debug(`[SKIP] Position already closing: ${pos.token}`); return; }
+            this.closingTokens.add(pos.token);
+            const lossPct = (((pos.entryPrice - currentBid) / pos.entryPrice) * 100).toFixed(1);
+            const reason = `OPTION PREMIUM STOP -35%: bid ₹${currentBid.toFixed(2)} <= 65% of entry ₹${pos.entryPrice.toFixed(2)} (loss ${lossPct}%). Hard stop.`;
+            this.logger.warn(`🛑 [${pos.symbol}] ${reason}`);
+            await this.paperTrading.closePosition(pos.token, currentBid, reason);
+            return;
+        }
+
         // ── GANN_ANGLE exits ──────────────────────────────────────────────────────
 
         // 1. Time exit at 14:45
@@ -795,8 +813,7 @@ export class HeartbeatService {
         // 4. Spot target: underlying live LTP reaches R_135 (CE) or S_135 (PE) — Nirwana exit
         // 5. Spot SL: underlying 5-min candle CLOSE crosses R_67.5 (CE) or S_67.5 (PE) — Nirwana exit
         if (pos.strategyName === 'GANN_ANGLE') {
-            const ltpMap = await this.nseService.getBatchLTP([pos.symbol]);
-            const spotLtp = ltpMap[pos.symbol] ?? null;
+            const spotLtp = await this.getSpotLtpWithCache(pos.symbol, `[GANN_ANGLE][${pos.symbol}]`);
             if (spotLtp) {
                 this.paperTrading.updateStockLTP(pos.token, spotLtp);
 
@@ -814,12 +831,13 @@ export class HeartbeatService {
                 }
 
                 // Spot SL via 5-min candle CLOSE (avoid premature exit on intracandle spikes)
+                // Cache TTL 15s (was 60s) — refreshes at every new 5-min candle boundary.
                 if (pos.slPrice) {
                     const closeCacheKey = `GA_SPOT_CLOSE:${pos.symbol}`;
                     let candleClose: number | null | undefined = await this.cacheManager.get<number>(closeCacheKey);
                     if (candleClose === undefined || candleClose === null) {
                         candleClose = await this.nseService.getLastCandleClose(pos.symbol, '5');
-                        if (candleClose) await this.cacheManager.set(closeCacheKey, candleClose, 60000);
+                        if (candleClose) await this.cacheManager.set(closeCacheKey, candleClose, 15000);
                     }
                     if (candleClose) {
                         const spotSlHit = pos.type === 'CE' ? candleClose < pos.slPrice : candleClose > pos.slPrice;
@@ -831,6 +849,17 @@ export class HeartbeatService {
                             await this.paperTrading.closePosition(pos.token, currentBid, reason);
                             return;
                         }
+                    }
+
+                    // Live LTP emergency exit: if spot moves >0.3% past SL (extreme move), don't wait for candle close
+                    const ltpSlHit = pos.type === 'CE' ? spotLtp < pos.slPrice * 0.997 : spotLtp > pos.slPrice * 1.003;
+                    if (ltpSlHit) {
+                        if (this.closingTokens.has(pos.token)) { this.logger.debug(`[SKIP] Position already closing: ${pos.token}`); return; }
+                        this.closingTokens.add(pos.token);
+                        const reason = `SPOT LTP EMERGENCY SL: ${pos.symbol} live ₹${spotLtp} breached SL ₹${pos.slPrice.toFixed(2)} by >0.3%. No candle wait.`;
+                        this.logger.warn(`🚨 [${pos.symbol}] ${reason}`);
+                        await this.paperTrading.closePosition(pos.token, currentBid, reason);
+                        return;
                     }
                 }
             }
@@ -849,27 +878,68 @@ export class HeartbeatService {
             return;
         }
 
+        // ── GANN_9: trailing stop for long-duration positions ─────────────────────
+        if (pos.strategyName === 'GANN_9' && pos.entryPrice > 0 && pos.entryTime) {
+            const ageMs = Date.now() - pos.entryTime;
+
+            // Track peak premium seen (reset is implicit — map persists until position closes)
+            const prevPeak9 = this.g9PeakPremium.get(pos.token) ?? pos.entryPrice;
+            if (currentBid > prevPeak9) this.g9PeakPremium.set(pos.token, currentBid);
+            const peak9 = this.g9PeakPremium.get(pos.token) ?? currentBid;
+            const peakGainPct = peak9 > pos.entryPrice ? (peak9 - pos.entryPrice) / pos.entryPrice : 0;
+
+            // 120+ min open AND peaked >40% above entry → exit immediately (time decay risk)
+            if (ageMs >= 120 * 60 * 1000 && peakGainPct >= 0.40) {
+                if (!this.closingTokens.has(pos.token)) {
+                    this.closingTokens.add(pos.token);
+                    const reason = `GANN_9 TIME-TRAIL EXIT: 120+ min open, peak was +${(peakGainPct*100).toFixed(1)}%. Exiting to avoid theta decay.`;
+                    this.logger.warn(`⏰ [${pos.symbol}] ${reason}`);
+                    await this.paperTrading.closePosition(pos.token, currentBid, reason);
+                    return;
+                }
+            }
+
+            // 90+ min open AND peaked >60% above entry → trail SL to breakeven
+            if (ageMs >= 90 * 60 * 1000 && peakGainPct >= 0.60) {
+                const breakeven = pos.entryPrice;
+                if (currentBid <= breakeven && !this.closingTokens.has(pos.token)) {
+                    this.closingTokens.add(pos.token);
+                    const reason = `GANN_9 TRAIL-SL BREAKEVEN: 90+ min open, peak was +${(peakGainPct*100).toFixed(1)}%. Bid ₹${currentBid.toFixed(2)} <= entry ₹${breakeven.toFixed(2)}.`;
+                    this.logger.warn(`🛑 [${pos.symbol}] ${reason}`);
+                    await this.paperTrading.closePosition(pos.token, currentBid, reason);
+                    return;
+                }
+            }
+        }
+
         // ── EMA_5: consume touch-exit flag set by scanner on candle close ───────
+        // Minimum hold time: PE=10 min, CE=30 min — prevents whipsaw exits on first retrace.
         if (pos.strategyName === 'EMA_5') {
             const emaExitFlag = await this.cacheManager.get(`EMA5_EXIT:${pos.symbol}`);
             if (emaExitFlag) {
-                if (this.closingTokens.has(pos.token)) { this.logger.debug(`[SKIP] Position already closing: ${pos.token}`); return; }
-                this.closingTokens.add(pos.token);
-                await this.cacheManager.del(`EMA5_EXIT:${pos.symbol}`);
-                const reason = 'EMA Touch Exit: Candle closed past 5 EMA';
-                this.logger.warn(`📉 EMA TOUCH EXIT: [${pos.symbol}] Closing at Bid ₹${currentBid}`);
-                this.logger.warn(`${exitPrefix} Immediate exit triggered for token: ${pos.token} — ${reason}`);
-                await this.paperTrading.closePosition(pos.token, currentBid, reason);
-                return;
+                const minHoldMs = pos.type === 'PE' ? 10 * 60 * 1000 : 30 * 60 * 1000;
+                const ageMs = pos.entryTime ? Date.now() - pos.entryTime : minHoldMs; // default: allow if no timestamp
+                if (ageMs < minHoldMs) {
+                    this.logger.debug(`[EMA5] [${pos.symbol}] ${pos.type} hold time ${Math.round(ageMs/60000)}m < min ${Math.round(minHoldMs/60000)}m — skipping touch exit.`);
+                } else {
+                    if (this.closingTokens.has(pos.token)) { this.logger.debug(`[SKIP] Position already closing: ${pos.token}`); return; }
+                    this.closingTokens.add(pos.token);
+                    await this.cacheManager.del(`EMA5_EXIT:${pos.symbol}`);
+                    const reason = 'EMA Touch Exit: Candle closed past 5 EMA';
+                    this.logger.warn(`📉 EMA TOUCH EXIT: [${pos.symbol}] Closing at Bid ₹${currentBid}`);
+                    this.logger.warn(`${exitPrefix} Immediate exit triggered for token: ${pos.token} — ${reason}`);
+                    await this.paperTrading.closePosition(pos.token, currentBid, reason);
+                    return;
+                }
             }
         }
 
         // ── Underlying SL / Target check ─────────────────────────────────────────
         if (pos.targetPrice && pos.slPrice) {
             // getBatchLTP reads from WS tick cache first (O(1) for subscribed stocks),
-            // REST fallback only on cache miss — safe for both WS and CRON callers.
-            const ltpMap = await this.nseService.getBatchLTP([pos.symbol]);
-            const ltp = ltpMap[pos.symbol] ?? null;
+            // REST fallback only on cache miss. On REST failure, uses lastKnownSpotLtp
+            // cache (max 10s stale) so SL/target checks continue through API cascades.
+            const ltp = await this.getSpotLtpWithCache(pos.symbol, `${exitPrefix}[${pos.symbol}]`);
             if (!ltp) return;
 
             this.paperTrading.updateStockLTP(pos.token, ltp);
@@ -1191,7 +1261,29 @@ export class HeartbeatService {
         this.cbHalfExited.clear();
         this.gaPartialBooked.clear();
         this.gaPeakPremium.clear();
+        this.lastKnownSpotLtp.clear();
         this.logger.log('[EOD] Half-exit trackers cleared for new day.');
+    }
+
+    /**
+     * Fetches underlying spot LTP via getBatchLTP, caching the last known value.
+     * On REST failure (null return), uses cached value up to SPOT_LTP_STALE_MS old.
+     * Eliminates the silent skip that occurs when the morning scan causes a REST cascade.
+     */
+    private async getSpotLtpWithCache(symbol: string, logPrefix: string): Promise<number | null> {
+        const ltpMap = await this.nseService.getBatchLTP([symbol]);
+        const fresh = ltpMap[symbol] ?? null;
+        if (fresh !== null) {
+            this.lastKnownSpotLtp.set(symbol, { ltp: fresh, ts: Date.now() });
+            return fresh;
+        }
+        const cached = this.lastKnownSpotLtp.get(symbol);
+        if (cached && (Date.now() - cached.ts) <= this.SPOT_LTP_STALE_MS) {
+            this.logger.warn(`${logPrefix} getBatchLTP null — using cached spot ₹${cached.ltp} (${Date.now() - cached.ts}ms old)`);
+            return cached.ltp;
+        }
+        this.logger.warn(`${logPrefix} getBatchLTP null, no usable cache — skipping exit check this cycle`);
+        return null;
     }
 
     private async getLastCompletedCandle(symbol: string, interval: '1' | '3' | '5' = '5'): Promise<{ close: number; high: number; low: number } | null> {
