@@ -28,6 +28,7 @@ deploy_backend() {
     "${BE_SRC}/app.controller.ts" \
     "${BE_SRC}/app.module.ts" \
     "${BE_SRC}/candle-breakout.service.ts" \
+    "${BE_SRC}/first5candle.service.ts" \
     "${BE_SRC}/gann-angle.service.ts" \
     "${BE_SRC}/gann.service.ts" \
     "${BE_SRC}/prisma.service.ts" \

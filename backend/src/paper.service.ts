@@ -83,6 +83,40 @@ export class PaperTradingService implements OnModuleInit {
             this.logger.error('Failed to cleanup orphaned trades on init', e);
         }
 
+        // ── Reload any OPEN positions from DB into activePositions ──
+        // Covers the case where the backend restarted mid-trade (within the 15-min window).
+        // Without this, heartbeat sees zero positions and SL/target checks never run.
+        try {
+            const stillOpen = await this.prisma.tradeHistory.findMany({ where: { status: 'OPEN' } });
+            for (const trade of stillOpen) {
+                if (!this.activePositions.has(trade.token)) {
+                    this.activePositions.set(trade.token, {
+                        symbol: trade.symbol,
+                        token: trade.token,
+                        tradingSymbol: trade.tradingSymbol ?? undefined,
+                        type: trade.type as 'CE' | 'PE',
+                        qty: trade.quantity,
+                        entryPrice: trade.entryPrice,
+                        currentLtp: trade.entryPrice,
+                        dbEntryId: trade.id,
+                        targetPrice: (trade as any).targetPrice ?? undefined,
+                        slPrice: (trade as any).slPrice ?? undefined,
+                        stockLtp: 0,
+                        maxProfit: 0,
+                        maxLoss: 0,
+                        strategyName: trade.strategyName ?? undefined,
+                        partialPnl: 0,
+                        entryTime: trade.entryTime.getTime(),
+                    });
+                }
+            }
+            if (stillOpen.length > 0) {
+                this.logger.log(`♻️ Restored ${stillOpen.length} OPEN position(s) into active monitoring after restart.`);
+            }
+        } catch (e) {
+            this.logger.error('Failed to reload open positions on init', e);
+        }
+
         // ── Restore halt state + initialFunds from DB across restarts ──
         try {
             const config = await this.prisma.shoonyaConfig.findFirst();
@@ -189,7 +223,9 @@ export class PaperTradingService implements OnModuleInit {
                 entryPrice: price,
                 status: 'OPEN',
                 isPaperTrade: true,
-                strategyName: strategyName || 'Default'
+                strategyName: strategyName || 'Default',
+                slPrice: slPrice ?? null,
+                targetPrice: targetPrice ?? null,
             }
         });
 
@@ -254,8 +290,15 @@ export class PaperTradingService implements OnModuleInit {
         const position = this.activePositions.get(token);
         if (position) {
             position.slPrice = newSL;
-            position.slTriggerTime = undefined; // Reset any active breach timer
+            position.slTriggerTime = undefined;
             this.activePositions.set(token, position);
+            // Persist so SL survives a backend restart
+            if (position.dbEntryId) {
+                this.prisma.tradeHistory.update({
+                    where: { id: position.dbEntryId },
+                    data: { slPrice: newSL },
+                }).catch(e => this.logger.error(`Failed to persist SL update for ${token}: ${e.message}`));
+            }
         }
     }
 
@@ -286,6 +329,7 @@ export class PaperTradingService implements OnModuleInit {
             await this.prisma.tradeHistory.update({
                 where: { id: position.dbEntryId },
                 data: {
+                    quantity: position.qty,
                     exitReason: `Half exit: ${closeQty} lots @ ₹${exitOptionPrice.toFixed(2)} (+₹${partialPnl.toFixed(0)}). Trailing remaining ${position.qty} lots.`,
                 }
             });

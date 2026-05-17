@@ -29,6 +29,8 @@ model TradeHistory {
   entryTime     DateTime  @default(now())
   exitTime      DateTime?
   exitReason    String? // E.g., 'Target Hit', '3 PM Exit'
+  slPrice       Float?   // underlying SL level — persisted so restarts can resume monitoring
+  targetPrice   Float?   // underlying target level — persisted so restarts can resume monitoring
   status        String    @default("OPEN") // 'OPEN', 'CLOSED', 'REJECTED'
   isPaperTrade  Boolean   @default(true)
   strategyName  String? // E.g., 'Gap Down Reversal', 'R2 Breakout'

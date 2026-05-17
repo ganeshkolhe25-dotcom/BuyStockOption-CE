@@ -714,11 +714,18 @@ export class HeartbeatService {
         // closes immediately for SL exits and all other strategies.
         // forceImmediate=true bypasses the limit queue (used for hard SL hits).
         const triggerExit = async (reason: string, forceImmediate = false): Promise<void> => {
+            const sellKey = `SELL:${pos.token}`;
+            // Hard SL overrides a pending limit sell — cancel it so the SL can fire immediately.
+            // Without this, a target-triggered limit sell blocks SL indefinitely (up to 2 min timeout).
+            if (forceImmediate && this.pendingLimitOrders.has(sellKey)) {
+                this.logger.warn(`[SL OVERRIDE] Cancelling pending limit sell for ${pos.token} — SL fired: ${reason}`);
+                this.pendingLimitOrders.delete(sellKey);
+                this.closingTokens.delete(pos.token);
+            }
             if (this.closingTokens.has(pos.token)) {
                 this.logger.debug(`[SKIP] Position already closing: ${pos.token}`);
                 return;
             }
-            const sellKey = `SELL:${pos.token}`;
             if (!forceImmediate && pos.strategyName === 'CANDLE_BREAKOUT') {
                 if (this.pendingLimitOrders.has(sellKey)) return; // already pending
                 this.closingTokens.add(pos.token);
@@ -1112,7 +1119,9 @@ export class HeartbeatService {
         const priceUpdates: PositionPriceUpdate[] = [];
 
         for (const pos of positions) {
-            if (this.closingTokens.has(pos.token)) {
+            // Skip only when truly closing (immediate exit in progress).
+            // Positions with a pending limit SELL must still be evaluated — SL may need to override.
+            if (this.closingTokens.has(pos.token) && !this.pendingLimitOrders.has(`SELL:${pos.token}`)) {
                 this.logger.debug(`[SKIP] Position already closing: ${pos.token}`);
                 continue;
             }
@@ -1141,7 +1150,11 @@ export class HeartbeatService {
             }
 
             priceUpdates.push({ token: pos.token, ltp: currentBid, pnl: (currentBid - pos.entryPrice) * pos.qty });
-            await this.evaluateExitForPosition(pos, currentBid, optionInfo, 'CRON');
+            try {
+                await this.evaluateExitForPosition(pos, currentBid, optionInfo, 'CRON');
+            } catch (e: any) {
+                this.logger.error(`[CRON] evaluateExitForPosition failed for ${pos.token} (${pos.symbol}): ${e.message}`);
+            }
         }
 
         if (this.priceGateway.hasClients()) {
@@ -1262,7 +1275,9 @@ export class HeartbeatService {
         this.gaPartialBooked.clear();
         this.gaPeakPremium.clear();
         this.lastKnownSpotLtp.clear();
-        this.logger.log('[EOD] Half-exit trackers cleared for new day.');
+        this.closingTokens.clear();
+        this.pendingLimitOrders.clear();
+        this.logger.log('[EOD] Half-exit trackers, closing state and pending orders cleared for new day.');
     }
 
     /**
