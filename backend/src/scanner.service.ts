@@ -655,11 +655,12 @@ export class ScannerService implements OnModuleInit {
     }
 
     /**
-     * Phase 2 — breakout check (every 5 seconds, 9:18–9:45 AM IST, Mon-Fri).
+     * Phase 2 — candle-close breakout check (every 5 seconds, 9:18–9:45 AM IST, Mon-Fri).
      * Runs only when at least one PENDING setup exists.
-     * Fetches live NIFTY/BANKNIFTY LTP via REST and fires trade if:
-     *   LTP > rangeHigh + 1 → CE entry (direct buy, no watchlist delay)
-     *   LTP < rangeLow  - 1 → PE entry (direct buy, no watchlist delay)
+     * Fetches the most recently completed 1-min candle and fires trade only if its
+     * CLOSE is outside the range (not a wick spike):
+     *   close > rangeHigh → CE entry
+     *   close < rangeLow  → PE entry
      */
     @Cron('*/5 * * * * 1-5', { timeZone: 'Asia/Kolkata' })
     async runCandleBreakoutCheck() {
@@ -670,18 +671,17 @@ export class ScannerService implements OnModuleInit {
         const pendingSetups = this.candleBreakout.getSetups().filter(s => s.signal === 'PENDING');
         if (pendingSetups.length === 0) return;
 
-        const ltpMap = await this.candleBreakout.fetchLtpMap();
-        const triggered = this.candleBreakout.checkBreakouts(ltpMap);
+        const triggered = await this.candleBreakout.checkBreakouts();
 
         for (const setup of triggered) {
             try {
                 const todayTraded = await this.paperTrading.getTodayTradedSymbols('CANDLE_BREAKOUT');
                 if (todayTraded.includes(setup.symbol)) continue;
 
-                const ltp = ltpMap[setup.symbol] ?? setup.breakoutPrice!;
+                // breakoutPrice = close of the confirmation candle = our spot entry reference
                 await this.heartbeatService.executeCandleBreakoutDirectly(
                     setup.symbol,
-                    ltp,
+                    setup.breakoutPrice!,
                     setup.signal as 'CE' | 'PE',
                     setup.entryTargetPrice!,
                     setup.entrySlPrice!,
@@ -699,7 +699,8 @@ export class ScannerService implements OnModuleInit {
      *
      * Rolling window: at each fire, uses the last 5 completed candles as the range
      * and the most recently closed candle as the breakout-check candle.
-     * Trades ONCE per index per day (CE and PE tracked independently).
+     * Max 5 trades per symbol per day (any direction). Direction of previous trades
+     * is irrelevant — every signal is taken independently until the daily limit is hit.
      */
     @Cron('5 */5 9-12 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async automatedFirst5CandleScan() {
@@ -709,29 +710,16 @@ export class ScannerService implements OnModuleInit {
 
         for (const inst of this.first5Candle.getInstruments()) {
             try {
-                const tradedCE = await this.paperTrading.getTodayTradedSymbols('FIRST_5_CANDLE', 'CE');
-                const tradedPE = await this.paperTrading.getTodayTradedSymbols('FIRST_5_CANDLE', 'PE');
-
-                // Both directions traded → skip entirely
-                if (tradedCE.includes(inst.symbol) && tradedPE.includes(inst.symbol)) continue;
-
                 const signal = await this.first5Candle.scanForBreakout(inst.symbol, inst.token);
 
-                if (signal === 'CE' && !tradedCE.includes(inst.symbol)) {
+                if (signal) {
                     const state = this.first5Candle.getStates().find(s => s.symbol === inst.symbol);
                     const spotLtp = state?.activationCandle?.close ?? 0;
                     if (spotLtp > 0) {
-                        await this.heartbeatService.executeFirst5CandleDirectly(inst.symbol, spotLtp, 'CE');
+                        await this.heartbeatService.executeFirst5CandleDirectly(inst.symbol, spotLtp, signal);
                         this.first5Candle.markTraded(inst.symbol);
-                        this.logger.log(`✅ [ORB5] CE trade placed for ${inst.symbol} at ₹${spotLtp}`);
-                    }
-                } else if (signal === 'PE' && !tradedPE.includes(inst.symbol)) {
-                    const state = this.first5Candle.getStates().find(s => s.symbol === inst.symbol);
-                    const spotLtp = state?.activationCandle?.close ?? 0;
-                    if (spotLtp > 0) {
-                        await this.heartbeatService.executeFirst5CandleDirectly(inst.symbol, spotLtp, 'PE');
-                        this.first5Candle.markTraded(inst.symbol);
-                        this.logger.log(`✅ [ORB5] PE trade placed for ${inst.symbol} at ₹${spotLtp}`);
+                        const updatedCount = this.first5Candle.getStates().find(s => s.symbol === inst.symbol)?.tradeCount ?? 1;
+                        this.logger.log(`✅ [ORB5] ${signal} trade #${updatedCount}/5 placed for ${inst.symbol} at ₹${spotLtp}`);
                     }
                 }
             } catch (err: any) {

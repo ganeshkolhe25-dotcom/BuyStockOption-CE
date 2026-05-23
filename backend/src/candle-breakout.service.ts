@@ -61,65 +61,88 @@ export class CandleBreakoutService {
     }
 
     /**
-     * Fetch live LTP for all PENDING setups via REST (NSE exchange).
-     * NIFTY/BANKNIFTY are index tokens on NSE — must use NSE, not NFO.
-     * REST is used directly; WS tick cache is unreliable for index tokens due to
-     * Shoonya's ~100-subscription limit which pushes indices past the active window.
-     */
-    async fetchLtpMap(): Promise<Record<string, number>> {
-        const ltpMap: Record<string, number> = {};
-        for (const inst of INSTRUMENTS) {
-            if (!this.setups.has(inst.symbol)) continue;
-            if (this.setups.get(inst.symbol)!.signal !== 'PENDING') continue;
-
-            const results = await this.shoonya.getMultiQuotes('NSE', [inst.token]);
-            if (results.length > 0 && results[0].lp) {
-                ltpMap[inst.symbol] = parseFloat(results[0].lp);
-            }
-        }
-        return ltpMap;
-    }
-
-    /**
-     * Check all PENDING setups for a breakout/breakdown using the latest LTP map.
-     * Entry price is pinned at rangeHigh + 5 (CE) or rangeLow - 5 (PE).
+     * Check all PENDING setups for a candle-CLOSE confirmed breakout.
+     * Fetches the most recently completed 1-min candle and checks its CLOSE price
+     * (not wick/LTP) against the range boundaries.
+     *
+     * A signal fires only when:
+     *   CE: lastCompletedCandle.close > rangeHigh  (body committed above range)
+     *   PE: lastCompletedCandle.close < rangeLow   (body committed below range)
+     *
+     * The confirmation candle must come AFTER the 2-candle pair that set the range.
+     * Wick spikes that reverse before the minute closes will NOT trigger a trade.
+     *
      * Returns setups that just triggered (signal changed from PENDING → CE/PE).
      */
-    checkBreakouts(ltpMap: Record<string, number>): CandleSetup[] {
+    async checkBreakouts(): Promise<CandleSetup[]> {
         const triggered: CandleSetup[] = [];
-        const BUFFER = 1; // 1-point noise filter — just enough to avoid phantom ticks
+        const nowSec = Math.floor(Date.now() / 1000);
+        const openTs = this.getMarketOpenTs();
 
         for (const [symbol, setup] of this.setups) {
             if (setup.signal !== 'PENDING') continue;
-            const ltp = ltpMap[symbol];
-            if (!ltp) continue;
 
-            if (ltp > setup.rangeHigh + BUFFER) {
-                const entryPrice = setup.rangeHigh + BUFFER;
-                const slDist = entryPrice - setup.rangeLow;
-                setup.signal = 'CE';
-                setup.breakoutPrice = entryPrice;
-                setup.breakoutAt = Date.now();
-                setup.entryTargetPrice = parseFloat((entryPrice + 2 * slDist).toFixed(2));
-                setup.entrySlPrice = parseFloat(setup.rangeLow.toFixed(2));
-                triggered.push(setup);
-                this.logger.log(
-                    `📈 2-CANDLE CE: [${symbol}] LTP ₹${ltp} > high ₹${setup.rangeHigh.toFixed(2)} + 1pt ` +
-                    `→ entry ₹${entryPrice} | Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
-                );
-            } else if (ltp < setup.rangeLow - BUFFER) {
-                const entryPrice = setup.rangeLow - BUFFER;
-                const slDist = setup.rangeHigh - entryPrice;
-                setup.signal = 'PE';
-                setup.breakoutPrice = entryPrice;
-                setup.breakoutAt = Date.now();
-                setup.entryTargetPrice = parseFloat((entryPrice - 2 * slDist).toFixed(2));
-                setup.entrySlPrice = parseFloat(setup.rangeHigh.toFixed(2));
-                triggered.push(setup);
-                this.logger.log(
-                    `📉 2-CANDLE PE: [${symbol}] LTP ₹${ltp} < low ₹${setup.rangeLow.toFixed(2)} - 1pt ` +
-                    `→ entry ₹${entryPrice} | Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
-                );
+            const inst = INSTRUMENTS.find(i => i.symbol === symbol);
+            if (!inst) continue;
+
+            try {
+                const series = await this.shoonya.getTimePriceSeries('NSE', inst.token, '1', 1);
+                if (!Array.isArray(series) || series.length === 0) continue;
+
+                // Keep only today's fully completed candles (time + 60 seconds <= now)
+                const completedCandles: OneMinCandle[] = series
+                    .filter(c => c.ssboe && parseInt(c.ssboe) >= openTs && parseInt(c.ssboe) + 60 <= nowSec)
+                    .map(c => ({
+                        time:    parseInt(c.ssboe),
+                        open:    parseFloat(c.into),
+                        high:    parseFloat(c.inth),
+                        low:     parseFloat(c.intl),
+                        close:   parseFloat(c.intc),
+                        isGreen: parseFloat(c.intc) >= parseFloat(c.into),
+                    }))
+                    .sort((a, b) => a.time - b.time);
+
+                if (completedCandles.length === 0) continue;
+
+                const lastCandle = completedCandles[completedCandles.length - 1];
+
+                // Confirmation candle must come after the pair that set the range
+                if (lastCandle.time <= setup.candle2.time) continue;
+
+                if (lastCandle.close > setup.rangeHigh) {
+                    const entryPrice = lastCandle.close;
+                    const slDist = entryPrice - setup.rangeLow;
+                    setup.signal = 'CE';
+                    setup.breakoutPrice = entryPrice;
+                    setup.breakoutAt = Date.now();
+                    setup.entryTargetPrice = parseFloat((entryPrice + 2 * slDist).toFixed(2));
+                    setup.entrySlPrice = parseFloat(setup.rangeLow.toFixed(2));
+                    triggered.push(setup);
+                    this.logger.log(
+                        `📈 2-CANDLE CE: [${symbol}] candle CLOSED ₹${entryPrice} > high ₹${setup.rangeHigh.toFixed(2)} ` +
+                        `→ Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
+                    );
+                } else if (lastCandle.close < setup.rangeLow) {
+                    const entryPrice = lastCandle.close;
+                    const slDist = setup.rangeHigh - entryPrice;
+                    setup.signal = 'PE';
+                    setup.breakoutPrice = entryPrice;
+                    setup.breakoutAt = Date.now();
+                    setup.entryTargetPrice = parseFloat((entryPrice - 2 * slDist).toFixed(2));
+                    setup.entrySlPrice = parseFloat(setup.rangeHigh.toFixed(2));
+                    triggered.push(setup);
+                    this.logger.log(
+                        `📉 2-CANDLE PE: [${symbol}] candle CLOSED ₹${entryPrice} < low ₹${setup.rangeLow.toFixed(2)} ` +
+                        `→ Target ₹${setup.entryTargetPrice} (2R) | SL ₹${setup.entrySlPrice}`
+                    );
+                } else {
+                    this.logger.debug(
+                        `[2-Candle] ${symbol}: close ₹${lastCandle.close} inside range ` +
+                        `₹${setup.rangeLow.toFixed(2)}–₹${setup.rangeHigh.toFixed(2)}, no signal.`
+                    );
+                }
+            } catch (err: any) {
+                this.logger.debug(`[2-Candle] ${symbol}: checkBreakouts error — ${err.message}`);
             }
         }
 

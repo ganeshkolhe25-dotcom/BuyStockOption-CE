@@ -17,7 +17,8 @@ export interface Orb5State {
     support: number;             // min low  of the 5 window candles
     windowCandles: FiveMinCandle[];  // the 5 range-defining candles
     activationCandle: FiveMinCandle | null; // candle whose close is checked for breakout
-    state: 'WAITING' | 'WATCHING' | 'TRADED' | 'EXPIRED';
+    state: 'WAITING' | 'WATCHING' | 'EXPIRED';
+    tradeCount: number;          // total trades placed today for this symbol (max 5)
     breakoutDirection?: 'CE' | 'PE';
     breakoutAt?: number;  // unix ms
     tradedAt?: number;    // unix ms
@@ -59,9 +60,9 @@ export class First5CandleService {
      */
     async scanForBreakout(symbol: string, token: string): Promise<'CE' | 'PE' | null> {
         try {
-            // Never scan a symbol that already traded today
+            // Never scan a symbol that hit the 5-trade daily limit
             const existing = this.states.get(symbol);
-            if (existing?.state === 'TRADED') return null;
+            if ((existing?.tradeCount ?? 0) >= 5) return null;
 
             const openTs = this.getMarketOpenTs();
             const series = await this.shoonya.getTimePriceSeries('NSE', token, '5', 1);
@@ -166,13 +167,17 @@ export class First5CandleService {
         }
     }
 
-    /** Called by scanner after a trade is placed — locks symbol for the day */
+    /** Called by scanner after a trade is placed — increments daily count (max 5) */
     markTraded(symbol: string): void {
         const s = this.states.get(symbol);
         if (s) {
-            s.state    = 'TRADED';
-            s.tradedAt = Date.now();
+            s.tradeCount  = (s.tradeCount ?? 0) + 1;
+            s.tradedAt    = Date.now();
             s.lastUpdated = Date.now();
+            if (s.tradeCount >= 5) {
+                s.state = 'EXPIRED';
+                this.logger.log(`[ORB5] ${symbol}: hit 5-trade daily limit — locked for the day.`);
+            }
         }
     }
 
@@ -193,7 +198,7 @@ export class First5CandleService {
 
     private setWaiting(symbol: string): void {
         const s = this.states.get(symbol);
-        if (s?.state === 'TRADED') return;
+        if ((s?.tradeCount ?? 0) >= 5) return;
         this.states.set(symbol, {
             symbol,
             resistance: 0,
@@ -201,6 +206,7 @@ export class First5CandleService {
             windowCandles: [],
             activationCandle: null,
             state: 'WAITING',
+            tradeCount: s?.tradeCount ?? 0,
             lastUpdated: Date.now(),
         });
     }
@@ -214,7 +220,7 @@ export class First5CandleService {
         support: number,
     ): void {
         const s = this.states.get(symbol);
-        if (s?.state === 'TRADED') return;
+        if ((s?.tradeCount ?? 0) >= 5) return;
         this.states.set(symbol, {
             symbol,
             resistance,
@@ -222,6 +228,7 @@ export class First5CandleService {
             windowCandles,
             activationCandle,
             state,
+            tradeCount:        s?.tradeCount ?? 0,
             breakoutDirection: s?.breakoutDirection,
             breakoutAt:        s?.breakoutAt,
             tradedAt:          s?.tradedAt,
