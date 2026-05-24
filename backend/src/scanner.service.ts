@@ -444,20 +444,13 @@ export class ScannerService implements OnModuleInit {
      * Automated 5 EMA PE (Sell) Strategy — 5-min candles, per original strategy video.
      * Only detects PE signals. CE signals come from the separate 15-min cron below.
      * Runs 5 seconds after every 5-minute candle close.
+     * Runs full session (9:15 AM – 3:15 PM) — no mid-day window restriction.
      */
     @Cron('5 */5 9-15 * * 1-5', { timeZone: 'Asia/Kolkata' })
     async automatedEma5Scan() {
         const now = new Date();
         const timeStr = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false });
         if (timeStr < '09:15:00' || timeStr > '15:15:00') return;
-
-        // Active session windows only — skip mid-day chop (11:30 AM – 1:30 PM)
-        const inMorningWindow = timeStr >= '09:30:00' && timeStr <= '11:30:00';
-        const inAfternoonWindow = timeStr >= '13:30:00' && timeStr <= '15:15:00';
-        if (!inMorningWindow && !inAfternoonWindow) {
-            this.logger.debug(`5 EMA PE: Outside active windows (${timeStr}). Skipping.`);
-            return;
-        }
 
         this.logger.log(`⏰ ${timeStr} 5 EMA PE Scan (5-min) Triggered!`);
 
