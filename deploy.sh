@@ -4,11 +4,11 @@
 set -e
 
 GCLOUD="C:\Users\maddy\AppData\Local\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
-PROJECT="project-2f647b6c-d2ba-4001-970"
+PROJECT="project-11c8f47d-cee3-4d25-bbb"
 ZONE="asia-south1-b"
 VM="shoonya-trader"
 REGION="asia-south1"
-FE_IMAGE="asia-south1-docker.pkg.dev/${PROJECT}/cloud-run-source-deploy/shoonya-frontend:latest"
+FE_IMAGE="asia-south1-docker.pkg.dev/project-11c8f47d-cee3-4d25-bbb/cloud-run-source-deploy/shoonya-frontend:latest"
 BE_SRC="backend/src"
 FE_SRC="frontend/src"
 
@@ -36,12 +36,17 @@ deploy_backend() {
     "${BE_SRC}/price-gateway.service.ts" \
     "${VM}:/home/maddy/BuyStockOption_CE/backend/src/" \
     --zone "$ZONE" --project "$PROJECT"
+  echo "[BE] Copying getAuthCode.py to VM..."
+  "$GCLOUD" compute scp \
+    "backend/getAuthCode.py" \
+    "${VM}:/home/maddy/BuyStockOption_CE/backend/getAuthCode.py" \
+    --zone "$ZONE" --project "$PROJECT"
   echo "[BE] Building Docker image on VM..."
   "$GCLOUD" compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" \
     --command="cd /home/maddy/BuyStockOption_CE/backend && docker build -t shoonya-backend:latest . 2>&1 | tail -3"
   echo "[BE] Restarting container..."
   "$GCLOUD" compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" \
-    --command="nohup bash -c 'docker stop shoonya-app; docker rm shoonya-app; docker run -d --name shoonya-app --restart always -p 8080:3001 --env-file /home/maddy/vm-app.env shoonya-backend:latest' > /home/maddy/restart.log 2>&1 &"
+    --command="nohup bash -c 'docker stop shoonya-app; docker rm shoonya-app; docker run -d --name shoonya-app --restart always -p 3001:3001 --env-file /home/maddy/vm-app.env --shm-size 256m shoonya-backend:latest' > /home/maddy/restart.log 2>&1 &"
   sleep 14
   "$GCLOUD" compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" \
     --command="docker ps --format '{{.Names}} {{.Status}}' && docker logs shoonya-app --tail 5 2>&1"

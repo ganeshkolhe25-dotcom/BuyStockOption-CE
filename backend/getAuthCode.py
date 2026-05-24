@@ -193,9 +193,9 @@ def fast_fill(element, value):
 
 # ── Chrome setup ───────────────────────────────────────────────────────────────
 options = webdriver.ChromeOptions()
-# --headless=new is required for CDP performance log capture (network traffic scanning).
-# Legacy --headless does not expose performance logs and token capture fails silently.
-# Docker crash prevention: --no-zygote + --single-process + --remote-debugging-port
+# --headless=new enables CDP performance log capture needed for token scanning.
+# Avoid --single-process / --no-zygote: they cause Chromium segfaults in Docker.
+# Use --disable-dev-shm-usage instead to handle small /dev/shm without crashing.
 options.add_argument("--headless=new")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
@@ -205,8 +205,6 @@ options.add_argument("--disable-extensions")
 options.add_argument("--no-first-run")
 options.add_argument("--window-size=1920,1080")
 options.add_argument("--disable-setuid-sandbox")
-options.add_argument("--no-zygote")
-options.add_argument("--single-process")
 options.add_argument("--remote-debugging-port=9222")
 options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
