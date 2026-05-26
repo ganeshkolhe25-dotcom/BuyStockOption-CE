@@ -56,7 +56,7 @@ export class HeartbeatService {
     private readonly g9PeakPremium = new Map<string, number>();
     // Spot LTP fallback cache — used when getBatchLTP returns null during REST cascade failures
     private readonly lastKnownSpotLtp = new Map<string, { ltp: number; ts: number }>();
-    private readonly SPOT_LTP_STALE_MS = 10_000;
+    private readonly SPOT_LTP_STALE_MS = 60_000;
 
     constructor(
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
@@ -175,21 +175,22 @@ export class HeartbeatService {
         symbol: string,
         spotLtp: number,
         type: 'CE' | 'PE',
-    ): Promise<void> {
+    ): Promise<boolean> {
         const openPositions = await this.paperTrading.getPositions();
         if (openPositions.some(p => p.symbol === symbol && p.strategyName === 'FIRST_5_CANDLE')) {
             this.logger.log(`BLOCKED [Conflict]: [${symbol}] already has open FIRST_5_CANDLE position.`);
-            return;
+            return false;
         }
         const hasPendingBuy = Array.from(this.pendingLimitOrders.values())
             .some(o => o.symbol === symbol && o.orderType === 'BUY' && o.strategyName === 'FIRST_5_CANDLE');
         if (hasPendingBuy) {
             this.logger.log(`BLOCKED [Conflict]: [${symbol}] pending FIRST_5_CANDLE buy in-flight.`);
-            return;
+            return false;
         }
         this.logger.log(`🚀 [ORB5] SIGNAL: [${symbol}] ${type} candle-close breakout confirmed at ₹${spotLtp}. Executing entry.`);
         // slPrice=0 and targetPrice=0 — overridden inside executeOptionTrade for FIRST_5_CANDLE
         await this.executeOptionTrade(symbol, spotLtp, type, 0, 0, 'FIRST_5_CANDLE', spotLtp);
+        return true;
     }
 
     /**
@@ -1014,6 +1015,9 @@ export class HeartbeatService {
             // Checked against option bid price (currentBid), NOT underlying spot (ltp).
             // Returns early so the underlying-based checks below do not fire for this strategy.
             if (pos.strategyName === 'FIRST_5_CANDLE' && pos.entryPrice > 0) {
+                const spotLtp = await this.getSpotLtpWithCache(pos.symbol, `[ORB5][${pos.symbol}]`);
+                if (spotLtp) this.paperTrading.updateStockLTP(pos.token, spotLtp);
+
                 const premiumSL     = parseFloat((pos.entryPrice * 0.90).toFixed(2));
                 const premiumTarget = parseFloat((pos.entryPrice * 1.20).toFixed(2));
 
