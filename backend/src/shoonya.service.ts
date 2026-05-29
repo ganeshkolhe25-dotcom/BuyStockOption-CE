@@ -332,18 +332,28 @@ export class ShoonyaService implements OnModuleInit {
         this.logger.log('🔑 Attempting QuickAuth...');
         const quickAuthOk = await this.authenticate();
         if (quickAuthOk && this.sessionToken) {
-            this.logger.log('✅ Daily token refresh via QuickAuth succeeded.');
-            if (this.onSessionRefreshed) await this.onSessionRefreshed();
-            return;
+            const valid = await this.validateToken();
+            if (valid) {
+                this.logger.log('✅ Daily token refresh via QuickAuth succeeded and validated.');
+                if (this.onSessionRefreshed) await this.onSessionRefreshed();
+                return;
+            }
+            this.logger.warn('⚠️ QuickAuth token obtained but API validation failed. Clearing and trying Chrome...');
+            this.sessionToken = null;
         }
 
-        // QuickAuth failed — try Chrome headless login as fallback
-        this.logger.warn('⚠️ QuickAuth failed. Trying Chrome auto-connect...');
+        // QuickAuth failed or invalid — try Chrome headless login as fallback
+        this.logger.warn('⚠️ QuickAuth failed or invalid. Trying Chrome auto-connect...');
         const chromeResult = await this.autoConnect();
         if (chromeResult.success && this.sessionToken) {
-            this.logger.log('✅ Daily token refresh via Chrome succeeded.');
-            if (this.onSessionRefreshed) await this.onSessionRefreshed();
-            return;
+            const valid = await this.validateToken();
+            if (valid) {
+                this.logger.log('✅ Daily token refresh via Chrome succeeded and validated.');
+                if (this.onSessionRefreshed) await this.onSessionRefreshed();
+                return;
+            }
+            this.logger.warn('⚠️ Chrome token obtained but API validation failed. Clearing...');
+            this.sessionToken = null;
         }
 
         // Both failed — restore the previous token so trading isn't blocked
@@ -472,6 +482,33 @@ export class ShoonyaService implements OnModuleInit {
         }
     }
 
+    /**
+     * Validates the current session token by calling GetQuotes for NIFTY (token 26000).
+     * Returns true only when the API responds with a live price — confirms the token
+     * is not just syntactically present but actually accepted by Shoonya's servers.
+     */
+    private async validateToken(): Promise<boolean> {
+        if (!this.sessionToken) return false;
+        try {
+            const config = await this.getConfig();
+            const jData = { uid: config.uid, exch: 'NSE', token: '26000' };
+            const payload = `jData=${JSON.stringify(jData)}&jKey=${this.sessionToken}`;
+            const response = await axios.post(`${this.endpoint}/GetQuotes`, payload, {
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                timeout: 5000,
+            });
+            const ok = response.data.stat === 'Ok' && !!response.data.lp;
+            this.logger.log(ok
+                ? `✅ [TokenValidation] Token confirmed live (NIFTY lp=${response.data.lp}).`
+                : `❌ [TokenValidation] Token rejected by API: ${response.data.emsg || 'no lp'}`
+            );
+            return ok;
+        } catch (err: any) {
+            this.logger.warn(`[TokenValidation] Validation call failed: ${err.message}`);
+            return false;
+        }
+    }
+
     /** Debug helper — returns raw SearchScrip values for NFO so we can see the exact tsym format */
     async debugSearchScrip(symbol: string, strike: string): Promise<any> {
         if (!this.sessionToken) await this.authenticate();
@@ -498,11 +535,14 @@ export class ShoonyaService implements OnModuleInit {
         const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
         if (!targetMonth || targetMonth === 'AUTO') {
-            // Rollover Logic: If the date is near or past the end of the month (>= 24th), monthly expiry is likely over.
-            if (date.getDate() >= 24) {
-                date.setMonth(date.getMonth() + 1);
-            }
-            targetMonth = monthNames[date.getMonth()];
+            // Find the nearest upcoming Thursday (or today if Thursday) — that is the next NFO expiry.
+            // This correctly handles weekly NIFTY/BANKNIFTY expiries that stay in the current month
+            // even when the date is >= 24, avoiding the old bug of rolling to the next month prematurely.
+            const dayOfWeek = date.getDay(); // 0=Sun, 1=Mon, ..., 4=Thu, 5=Fri, 6=Sat
+            const daysUntilThursday = dayOfWeek <= 4 ? (4 - dayOfWeek) : (7 - dayOfWeek + 4);
+            const nextExpiry = new Date(date);
+            nextExpiry.setDate(date.getDate() + daysUntilThursday);
+            targetMonth = monthNames[nextExpiry.getMonth()];
         }
         
         // Use current/forward rolled year for options logic
@@ -579,6 +619,7 @@ export class ShoonyaService implements OnModuleInit {
             'MFSL': 10, 'SOLARINDS': 100, 'TIINDIA': 50, 'OFSS': 100,
             'LTIM': 50, 'TATAPOWER': 2.5, 'GRASIM': 10,
             'NHPC': 2.5, 'BEL': 2.5, 'POLYCAB': 50,
+            'AXISBANK': 10, 'ADANIENSOL': 10,
         };
 
         let step = NSE_STOCK_STEPS[symbol];
@@ -735,8 +776,11 @@ export class ShoonyaService implements OnModuleInit {
         const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
         let targetMonth = config.expiryMonth;
         if (!targetMonth || targetMonth === 'AUTO') {
-            if (date.getDate() >= 24) date.setMonth(date.getMonth() + 1);
-            targetMonth = monthNames[date.getMonth()];
+            const dayOfWeek = date.getDay();
+            const daysUntilThursday = dayOfWeek <= 4 ? (4 - dayOfWeek) : (7 - dayOfWeek + 4);
+            const nextExpiry = new Date(date);
+            nextExpiry.setDate(date.getDate() + daysUntilThursday);
+            targetMonth = monthNames[nextExpiry.getMonth()];
         }
 
         // Reuse same step table as findAtmOption
@@ -760,6 +804,7 @@ export class ShoonyaService implements OnModuleInit {
             'MFSL': 10, 'SOLARINDS': 100, 'TIINDIA': 50, 'OFSS': 100,
             'LTIM': 50, 'TATAPOWER': 2.5, 'GRASIM': 10,
             'NHPC': 2.5, 'BEL': 2.5, 'POLYCAB': 50,
+            'AXISBANK': 10, 'ADANIENSOL': 10,
         };
 
         let step = NSE_STOCK_STEPS[symbol];
@@ -835,75 +880,90 @@ export class ShoonyaService implements OnModuleInit {
      * Interval: 1, 3, 5, 10, 15, 30, 60, 120, 240, D
      */
     async getTimePriceSeries(exchange: string, token: string, interval: string, daysLimit = 2, retry = true): Promise<any[]> {
-        try {
-            if (!this.sessionToken) await this.authenticate();
-            const config = await this.getConfig();
+        const maxAttempts = retry ? 3 : 1;
 
-            // End time is now, start time is X days ago
-            const endTime = new Date();
-            const startTime = new Date();
-            startTime.setDate(startTime.getDate() - daysLimit);
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                if (!this.sessionToken) await this.authenticate();
+                const config = await this.getConfig();
 
-            const jData = {
-                uid: config.uid,
-                exch: exchange,
-                token: token,
-                st: Math.floor(startTime.getTime() / 1000).toString(), // Unix timestamp in seconds
-                et: Math.floor(endTime.getTime() / 1000).toString(),
-                intrv: interval
-            };
+                const endTime = new Date();
+                const startTime = new Date();
+                startTime.setDate(startTime.getDate() - daysLimit);
 
-            const payload = `jData=${JSON.stringify(jData)}&jKey=${this.sessionToken}`;
-            const response = await axios.post(`${this.endpoint}/TPSeries`, payload, {
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                timeout: 8000
-            });
+                const jData = {
+                    uid: config.uid,
+                    exch: exchange,
+                    token: token,
+                    st: Math.floor(startTime.getTime() / 1000).toString(),
+                    et: Math.floor(endTime.getTime() / 1000).toString(),
+                    intrv: interval
+                };
 
-            if (Array.isArray(response.data)) {
-                return response.data; // Shoonya returns candles: {ssboe, time, into, inth, intl, intc, intv, ...}
-            }
+                const payload = `jData=${JSON.stringify(jData)}&jKey=${this.sessionToken}`;
+                const response = await axios.post(`${this.endpoint}/TPSeries`, payload, {
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    timeout: 10000
+                });
 
-            // Shoonya may return 401 as JSON stat instead of HTTP 401
-            const emsg = response.data?.emsg || '';
-            const isSessionErr = response.data?.stat === 'Not_Ok' &&
-                (emsg.toLowerCase().includes('session') || emsg.toLowerCase().includes('invalid'));
+                if (Array.isArray(response.data)) {
+                    return response.data;
+                }
 
-            if (isSessionErr && retry && !this.sessionClearInProgress) {
-                this.sessionClearInProgress = true;
-                this.logger.warn(`Session expired on TPSeries (JSON). Reloading token from DB...`);
-                this.sessionToken = null;
-                const reauthed = await this.authenticate(); // Loads from DB or QuickAuth
-                this.sessionClearInProgress = false;
-                if (reauthed) return this.getTimePriceSeries(exchange, token, interval, daysLimit, false);
+                const emsg = response.data?.emsg || '';
+                const isSessionErr = response.data?.stat === 'Not_Ok' &&
+                    (emsg.toLowerCase().includes('session') || emsg.toLowerCase().includes('invalid'));
+
+                if (isSessionErr && !this.sessionClearInProgress) {
+                    this.sessionClearInProgress = true;
+                    this.logger.warn(`[TPS] Session expired (JSON) attempt ${attempt}/${maxAttempts}. Re-authenticating...`);
+                    this.sessionToken = null;
+                    const reauthed = await this.authenticate();
+                    this.sessionClearInProgress = false;
+                    if (reauthed && attempt < maxAttempts) continue;
+                    return [];
+                }
+
+                if (response.data.stat !== 'Ok') {
+                    this.logger.warn(`[TPS] Non-Ok for token ${token} attempt ${attempt}/${maxAttempts}: ${emsg || 'Unknown'}`);
+                    if (attempt < maxAttempts) {
+                        await new Promise(res => setTimeout(res, attempt * 1000));
+                        continue;
+                    }
+                }
+
+                return [];
+
+            } catch (error) {
+                const responseData = error.response?.data;
+                const isSessionExpired =
+                    error.response?.status === 401 ||
+                    (responseData?.emsg && responseData.emsg.toLowerCase().includes('session'));
+
+                if (isSessionExpired && !this.sessionClearInProgress) {
+                    this.sessionClearInProgress = true;
+                    this.logger.warn(`[TPS] Session expired (401) attempt ${attempt}/${maxAttempts}. Re-authenticating...`);
+                    this.sessionToken = null;
+                    const reauthed = await this.authenticate();
+                    this.sessionClearInProgress = false;
+                    if (reauthed && attempt < maxAttempts) continue;
+                    return [];
+                }
+
+                if (isSessionExpired && this.sessionClearInProgress) return [];
+
+                // Timeout or transient network error — retry with backoff
+                if (attempt < maxAttempts) {
+                    this.logger.debug(`[TPS] Attempt ${attempt}/${maxAttempts} failed for ${token} (${interval}m): ${error.message}. Retrying in ${attempt}s...`);
+                    await new Promise(res => setTimeout(res, attempt * 1000));
+                    continue;
+                }
+
+                this.logger.error(`[TPS] All ${maxAttempts} attempts failed for token ${token} (${interval}m): ${error.message}`);
                 return [];
             }
-
-            if (response.data.stat !== 'Ok') {
-                this.logger.warn(`TPS Query returned non-Ok status for token ${token}: ${emsg || 'Unknown error'}`);
-            }
-
-            return [];
-        } catch (error) {
-            const responseData = error.response?.data;
-            const isSessionExpired =
-                error.response?.status === 401 ||
-                (responseData?.emsg && responseData.emsg.toLowerCase().includes('session'));
-
-            if (isSessionExpired && retry && !this.sessionClearInProgress) {
-                this.sessionClearInProgress = true;
-                this.logger.warn(`Session expired (401) on TPSeries. Reloading token from DB...`);
-                this.sessionToken = null;
-                const reauthed = await this.authenticate(); // Loads from DB or QuickAuth
-                this.sessionClearInProgress = false;
-                if (reauthed) return this.getTimePriceSeries(exchange, token, interval, daysLimit, false);
-                return [];
-            }
-
-            if (isSessionExpired && retry && this.sessionClearInProgress) return [];
-
-            this.logger.error(`Shoonya TPS Error: ${error.message}`);
-            return [];
         }
+        return [];
     }
 
     /**
