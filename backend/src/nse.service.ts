@@ -621,10 +621,19 @@ export class NseService implements OnModuleInit {
         // REST fallback for symbols not yet in the tick cache
         if (restSymbols.length > 0) {
             const restTokens = restSymbols.map(s => this.tokenMap.get(s)).filter(Boolean) as string[];
+            // Build reverse token→symbol map so we don't rely on item.tsym, which Shoonya
+            // returns as a display name for index tokens (e.g. "Nifty 50" instead of "NIFTY").
+            const tokenToSym = new Map<string, string>();
+            for (const sym of restSymbols) {
+                const tok = this.tokenMap.get(sym);
+                if (tok) tokenToSym.set(tok, sym);
+            }
             const results = await this.shoonya.getMultiQuotes('NSE', restTokens);
             for (const item of results) {
-                if (item.lp && item.tsym) {
-                    priceMap[item.tsym.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym] = parseFloat(item.lp);
+                if (item.lp) {
+                    const sym = (item.tk ? tokenToSym.get(item.tk) : undefined)
+                             ?? (item.tsym?.endsWith('-EQ') ? item.tsym.slice(0, -3) : item.tsym);
+                    if (sym) priceMap[sym] = parseFloat(item.lp);
                 }
             }
             this.logger.debug(`[WS] getBatchLTP: ${symbols.length - restSymbols.length} from tick cache, ${restSymbols.length} via REST.`);

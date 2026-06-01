@@ -709,10 +709,12 @@ export class ScannerService implements OnModuleInit {
                     const state = this.first5Candle.getStates().find(s => s.symbol === inst.symbol);
                     const spotLtp = state?.activationCandle?.close ?? 0;
                     if (spotLtp > 0) {
-                        await this.heartbeatService.executeFirst5CandleDirectly(inst.symbol, spotLtp, signal);
-                        this.first5Candle.markTraded(inst.symbol);
-                        const updatedCount = this.first5Candle.getStates().find(s => s.symbol === inst.symbol)?.tradeCount ?? 1;
-                        this.logger.log(`✅ [ORB5] ${signal} trade #${updatedCount}/5 placed for ${inst.symbol} at ₹${spotLtp}`);
+                        const placed = await this.heartbeatService.executeFirst5CandleDirectly(inst.symbol, spotLtp, signal);
+                        if (placed) {
+                            this.first5Candle.markTraded(inst.symbol);
+                            const updatedCount = this.first5Candle.getStates().find(s => s.symbol === inst.symbol)?.tradeCount ?? 1;
+                            this.logger.log(`✅ [ORB5] ${signal} trade #${updatedCount}/5 placed for ${inst.symbol} at ₹${spotLtp}`);
+                        }
                     }
                 }
             } catch (err: any) {

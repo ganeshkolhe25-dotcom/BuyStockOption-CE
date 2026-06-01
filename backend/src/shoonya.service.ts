@@ -534,17 +534,32 @@ export class ShoonyaService implements OnModuleInit {
         const date = new Date();
         const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
+        // Helper: compute nearest upcoming Thursday's month abbreviation
+        const nearestExpiryMonth = () => {
+            const dayOfWeek = date.getDay();
+            const daysUntilThursday = dayOfWeek <= 4 ? (4 - dayOfWeek) : (7 - dayOfWeek + 4);
+            const nextExpiry = new Date(date);
+            nextExpiry.setDate(date.getDate() + daysUntilThursday);
+            return monthNames[nextExpiry.getMonth()];
+        };
+
         if (!targetMonth || targetMonth === 'AUTO') {
             // Find the nearest upcoming Thursday (or today if Thursday) — that is the next NFO expiry.
             // This correctly handles weekly NIFTY/BANKNIFTY expiries that stay in the current month
             // even when the date is >= 24, avoiding the old bug of rolling to the next month prematurely.
-            const dayOfWeek = date.getDay(); // 0=Sun, 1=Mon, ..., 4=Thu, 5=Fri, 6=Sat
-            const daysUntilThursday = dayOfWeek <= 4 ? (4 - dayOfWeek) : (7 - dayOfWeek + 4);
-            const nextExpiry = new Date(date);
-            nextExpiry.setDate(date.getDate() + daysUntilThursday);
-            targetMonth = monthNames[nextExpiry.getMonth()];
+            targetMonth = nearestExpiryMonth();
+        } else {
+            // Guard: if the stored expiryMonth is a past month (e.g. default "APR" still in DB during June),
+            // treat it as stale and auto-correct to the nearest Thursday's month.
+            // monthNames.indexOf returns -1 for unrecognised strings, which also triggers fallback.
+            const storedIdx = monthNames.indexOf(targetMonth.toUpperCase());
+            if (storedIdx === -1 || storedIdx < date.getMonth()) {
+                const corrected = nearestExpiryMonth();
+                this.logger.warn(`[findAtmOption] Stored expiryMonth '${targetMonth}' is stale — auto-corrected to ${corrected}`);
+                targetMonth = corrected;
+            }
         }
-        
+
         // Use current/forward rolled year for options logic
 
 
@@ -775,12 +790,22 @@ export class ShoonyaService implements OnModuleInit {
         const date = new Date();
         const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
         let targetMonth = config.expiryMonth;
-        if (!targetMonth || targetMonth === 'AUTO') {
+        const nearestExpiryMonthItm = () => {
             const dayOfWeek = date.getDay();
             const daysUntilThursday = dayOfWeek <= 4 ? (4 - dayOfWeek) : (7 - dayOfWeek + 4);
             const nextExpiry = new Date(date);
             nextExpiry.setDate(date.getDate() + daysUntilThursday);
-            targetMonth = monthNames[nextExpiry.getMonth()];
+            return monthNames[nextExpiry.getMonth()];
+        };
+        if (!targetMonth || targetMonth === 'AUTO') {
+            targetMonth = nearestExpiryMonthItm();
+        } else {
+            const storedIdx = monthNames.indexOf(targetMonth.toUpperCase());
+            if (storedIdx === -1 || storedIdx < date.getMonth()) {
+                const corrected = nearestExpiryMonthItm();
+                this.logger.warn(`[findTopItmOptionByVolume] Stored expiryMonth '${targetMonth}' is stale — auto-corrected to ${corrected}`);
+                targetMonth = corrected;
+            }
         }
 
         // Reuse same step table as findAtmOption
